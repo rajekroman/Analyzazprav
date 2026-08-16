@@ -9,7 +9,8 @@ Aktuální funkční slice podporuje:
 - obecné message CSV s hlavičkou;
 - JSON a JSONL message exporty;
 - resolver skutečných souborů příloh + SHA-256;
-- source participant membership a metadata Apple konverzací.
+- source participant membership a metadata Apple konverzací;
+- auditní evidenci neemitovaných recordů přes `errors.jsonl`.
 
 ## Vlastnosti
 
@@ -26,6 +27,7 @@ Aktuální funkční slice podporuje:
 - celý původní CSV/JSON record zůstává v `raw_payload` pro audit A7;
 - datum s explicitním timezone offsetem se převádí do UTC; lokální datum bez offsetu zůstává raw a není falešně označeno jako UTC;
 - neznámý numerický timestamp se automaticky nepřevádí, protože bez znalosti epochy/jednotky by šlo o neauditovatelný odhad;
+- manifest rozlišuje `messages_seen` a `messages_emitted`; serializační chyba se zapíše do `errors.jsonl` se source identifikací a typem chyby;
 - vše běží lokálně, bez cloudu, externího API a AI.
 
 ## A1 → A2 kontrakt
@@ -37,8 +39,11 @@ Výstup:
 ```text
 staging/
 ├── manifest.json
-└── messages.jsonl
+├── messages.jsonl
+└── errors.jsonl
 ```
+
+Prázdný `errors.jsonl` znamená, že během serializace nebyl vynechán žádný záznam. A7 může současně ověřit `messages_seen == messages_emitted` a `errors == 0`.
 
 ## Apple Messages
 
