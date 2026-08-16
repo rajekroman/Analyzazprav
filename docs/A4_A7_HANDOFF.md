@@ -16,7 +16,22 @@ Pro každý řádek `analysis_a4_reconciliation` musí platit:
 
 Pokud ne, A4 výstup se nesmí předat A5/A6 jako aktuální analýza.
 
-## 2. Session provenance
+## 2. Participant resolution provenance (A3 v5)
+
+Pokud A3 poskytuje `analysis_processed_messages_resolved_latest`, A4 ji musí preferovat před starší `analysis_processed_messages_latest` a pro participant-level metriky použít:
+
+`COALESCE(resolved_sender_id, A2 sender_id)`.
+
+A4 nesmí implementovat vlastní paralelní alias/person-resolution heuristiku. A2 identity zůstávají autoritativní a A3 smí automaticky unionovat pouze identity podle svého konzervativního auditovatelného kontraktu. Stejné display jméno samo o sobě nesmí v A4 dvě osoby sloučit.
+
+A7 musí v integračním scénáři ověřit alespoň:
+
+- dvě A2 identity explicitně označené `is_self` se po A3 v5 mohou mapovat na jeden `resolved_sender_id`,
+- A4 použije tentýž resolved ID pro obě membership evidence,
+- jiný účastník zůstane oddělený,
+- participant-level message accounting po resolution stále odpovídá source membership countu.
+
+## 3. Session provenance
 
 Musí být nulové:
 
@@ -26,7 +41,7 @@ Musí být nulové:
 
 Každý A4 session reference je interpretován pouze spolu s `analytics_run.processing_run_id`. Samotný `session_id` není globální identifikátor.
 
-## 3. Source immutability
+## 4. Source immutability
 
 A4 nesmí měnit tabulky A1-A3. Při A4 rerunu se mohou měnit pouze A4 derived tabulky a views.
 
@@ -36,22 +51,22 @@ A7 má před/po A4 běhu porovnat alespoň:
 - počty `processing_run`, `processed_message`, `conversation_session`,
 - kontrolní source/canonical fingerprinty, pokud jsou v daném QA scénáři k dispozici.
 
-## 4. Deterministický rerun
+## 5. Deterministický rerun
 
 Při stejných A2/A3 datech, stejné A4 verzi a stejném `AnalyticsConfig` musí být analytický obsah stejný bez ohledu na ID nového `analytics_run` nebo jeho wall-clock timestamp.
 
-## 5. Incremental invalidation
+## 6. Incremental invalidation
 
 Default incremental režim smí vrátit `up_to_date` pouze tehdy, když se nezměnil:
 
 - `source_fingerprint`, ani
 - `analysis_signature`.
 
-Změna membership, A3 processed feature, A4 verze/metody nebo konfigurace musí dotčenou konverzaci invalidovat a přepočítat celou.
+Změna membership, A3 processed feature, resolved sender identity, A4 verze/metody nebo konfigurace musí dotčenou konverzaci invalidovat a přepočítat celou.
 
-A4 v8 zahrnuje do `analysis_signature` i metodu `topic_marker_cooccurrence_v1`; přechod ze starší analytické verze tedy nesmí recyklovat starý incremental výsledek.
+A4 v9 zahrnuje do `analysis_signature` A3 resolved-sender input contract i metodu `topic_marker_cooccurrence_v1`; přechod ze starší analytické verze tedy nesmí recyklovat starý incremental výsledek.
 
-## 6. Topic evidence reconciliation
+## 7. Topic evidence reconciliation
 
 `analysis_a4_topic_period_reconciliation` musí vysvětlit všechny topic evidence rows:
 
@@ -61,7 +76,7 @@ A4 v8 zahrnuje do `analysis_signature` i metodu `topic_marker_cooccurrence_v1`; 
 
 Každý řádek `analysis_a4_topic_evidence` musí být dohledatelný na canonical `message(id)`. Topic candidate je lexical evidence, ne prokázaná sémantická nebo psychologická interpretace.
 
-## 7. Topic × marker evidence reconciliation (A4 v8)
+## 8. Topic × marker evidence reconciliation (zavedeno v A4 v8)
 
 `topic_marker_cooccurrence_v1` je pouze deterministická evidence, že **ve stejné zprávě**, která už je doloženou topic evidence, nastal alespoň jeden explicitně nakonfigurovaný marker.
 
@@ -93,7 +108,7 @@ Read kontrakty:
 
 Marker hit **není sentiment, emoce, motivace ani psychologický stav**. Například `negative_hit_count > 0` znamená pouze výskyt explicitního markeru podle `AnalyticsConfig.negative_markers`. A4 ani A7 z toho nesmějí odvodit, že „téma je negativní“ nebo že účastník něco určitě cítil.
 
-## 8. Foreign keys a SQLite integrity
+## 9. Foreign keys a SQLite integrity
 
 Release gate musí obsahovat:
 
@@ -107,7 +122,7 @@ Požadovaný výsledek:
 - `integrity_check = ok`,
 - `foreign_key_check` bez řádků.
 
-## 9. Regression suite
+## 10. Regression suite
 
 Minimální promotion gate A4 je full repository test suite:
 
@@ -118,6 +133,6 @@ python -m pytest -q
 
 A4 PR navíc musí mít zelené samostatné A1, A2, A3, A4 a A7 GitHub Actions workflow, pokud jsou na aktuálním `main` aktivní.
 
-## 10. Handoff do A5/A6
+## 11. Handoff do A5/A6
 
 A5 a A6 smějí používat pouze A4 konverzace, pro které A7 akceptuje reconciliation. AI interpretace musí odkazovat na konkrétní A4 metriky a/nebo canonical messages; A4 pattern, topic candidate ani topic-marker co-occurrence se nesmí prezentovat jako jistý psychologický fakt.
