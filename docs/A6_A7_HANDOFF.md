@@ -12,7 +12,17 @@ Pro každý canonical `message_id`, který A6 zobrazí jako evidence:
 4. `source_message_id`, `source_conversation_id`, `source_row_id`, `raw_timestamp` a `source_hash` se nesmí v A6 měnit;
 5. více source rows pro jeden canonical message je povoleno a A6 je nesmí sloučit do falešného jediného zdroje.
 
-## 2. A4 finding → evidence
+## 2. Canonical message → attachment metadata
+
+Pokud A6 zobrazí přílohu u evidence message, A7 musí ověřit:
+
+1. dvojice `message_id` / `attachment_id` existuje v `analysis_attachments`;
+2. A6 zachovává `position`, `sha256`, `mime_type`, `size_bytes`, `filename`, `storage_path` a `availability` beze změny;
+3. chybějící/corrupt/external attachment se nesmí z UI ztratit pouze proto, že soubor není fyzicky dostupný;
+4. A6 nesmí tvrdit attachment source provenance, dokud A2 nepublikuje stabilní attachment-source view;
+5. po publikaci takového view musí A7 rozšířit gate až k původnímu attachment source recordu.
+
+## 3. A4 finding → evidence
 
 Pro každý řádek, který A6 načte z:
 
@@ -28,7 +38,7 @@ musí A7 ověřit:
 4. A6 drill-down zobrazí přesně množinu evidence IDs z A4, bez tichého přidání nebo odebrání;
 5. chybějící evidence ID je viditelná chyba, nikoli prázdná evidence.
 
-## 3. A6 selection → A5 packet
+## 4. A6 selection → A5 packet
 
 Pro každý A6 `analysis_packet` schema v1:
 
@@ -40,7 +50,7 @@ Pro každý A6 `analysis_packet` schema v1:
 6. context radius nesmí měnit selected evidence IDs;
 7. textový/sender filtr UI nesmí odstranit okolní zprávy z contextu, pokud patří do zvoleného context radius.
 
-## 4. A5 result → A6 evidence drill-down
+## 5. A5 result → A6 evidence drill-down
 
 Pro každý přijatý A5 výsledek musí A7 nezávisle ověřit evidence references v:
 
@@ -56,7 +66,7 @@ Každý odkaz musí:
 4. být v A6 dohledatelný až na A2 source provenance;
 5. při chybě být zobrazen jako porušená evidence chain.
 
-## 5. Navigační invariant
+## 6. Navigační invariant
 
 A6 musí držet aktivní výběr v jedné konkrétní konverzaci. Změna `conversation_id` musí vyčistit:
 
@@ -66,7 +76,7 @@ A6 musí držet aktivní výběr v jedné konkrétní konverzaci. Změna `conver
 
 Tím se zabrání tomu, aby UI zobrazovalo nebo analyzovalo evidence z jiné konverzace.
 
-## 6. Golden end-to-end gate
+## 7. Golden end-to-end gate
 
 Před označením A6/A7 za hotové musí existovat golden dataset, který projde:
 
@@ -76,6 +86,7 @@ A7 musí pro tento běh potvrdit:
 
 - reconciliation vstupních source records;
 - canonical integrity;
+- canonical attachment-link integrity;
 - A4 evidence integrity;
 - A6 packet integrity;
 - A5 evidence integrity;
