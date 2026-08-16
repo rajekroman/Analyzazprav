@@ -61,9 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     generic_csv = sub.add_parser(
         "csv",
-        help="Extract a headered generic message CSV into the A1 staging contract",
+        help="Extract a generic message CSV; use an explicit mapping profile for nonstandard/headerless sources",
     )
     generic_csv.add_argument("--csv", required=True, type=Path)
+    generic_csv.add_argument(
+        "--mapping-profile",
+        type=Path,
+        help="JSON profile declaring delimiter, header mode and exact canonical field mapping",
+    )
     _add_output_and_attachments(generic_csv)
 
     generic_json = sub.add_parser(
@@ -105,7 +110,12 @@ def main() -> int:
     elif args.command == "imazing-csv":
         stats = import_imazing_csv(args.csv, args.output_dir, args.attachments_root)
     elif args.command == "csv":
-        stats = import_generic_csv(args.csv, args.output_dir, args.attachments_root)
+        stats = import_generic_csv(
+            args.csv,
+            args.output_dir,
+            args.attachments_root,
+            args.mapping_profile,
+        )
     elif args.command == "json":
         stats = import_generic_json(args.json, args.output_dir, args.attachments_root)
     elif args.command == "txt":
