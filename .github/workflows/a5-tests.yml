@@ -1,0 +1,34 @@
+name: A5 tests
+
+on:
+  pull_request:
+    paths:
+      - "src/analyzazprav/a5_ai/**"
+      - "src/analyzazprav/qa/a5_evidence.py"
+      - "src/analyzazprav/qa/__init__.py"
+      - "tests/**"
+      - ".github/workflows/a5-tests.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/analyzazprav/a5_ai/**"
+      - "src/analyzazprav/qa/a5_evidence.py"
+      - "src/analyzazprav/qa/__init__.py"
+      - "tests/**"
+      - ".github/workflows/a5-tests.yml"
+
+jobs:
+  vertical-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install unified project and pytest
+        run: python -m pip install -e . pytest
+      - name: Run full A1-A5 and canonical A7 regression suite
+        run: python -m pytest -q tests
+      - name: Compile A5 and A7 evidence packages
+        run: python -m compileall -q src/analyzazprav/a5_ai src/analyzazprav/qa tests/a5_ai
