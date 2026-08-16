@@ -58,9 +58,7 @@ def _imessage_inventory(path: Path) -> dict[str, Any]:
         if "message" not in tables:
             raise ValueError("Apple Messages reconciliation requires the message table")
 
-        message_ids = {
-            str(row[0]) for row in conn.execute("SELECT ROWID FROM message")
-        }
+        message_ids = {str(row[0]) for row in conn.execute("SELECT ROWID FROM message")}
 
         membership_pairs: Counter[tuple[str, str]] = Counter()
         if "chat_message_join" in tables:
@@ -75,22 +73,14 @@ def _imessage_inventory(path: Path) -> dict[str, Any]:
 
         attachment_ids: set[str] = set()
         if "attachment" in tables:
-            attachment_ids = {
-                str(row[0]) for row in conn.execute("SELECT ROWID FROM attachment")
-            }
+            attachment_ids = {str(row[0]) for row in conn.execute("SELECT ROWID FROM attachment")}
 
-        message_attachment_pairs: set[tuple[str, str]] = set()
+        message_attachment_pairs: Counter[tuple[str, str]] = Counter()
         if "message_attachment_join" in tables:
-            message_attachment_pairs = {
-                (str(row[0]), str(row[1]))
-                for row in conn.execute(
-                    "SELECT message_id, attachment_id FROM message_attachment_join"
-                )
-            }
+            for row in conn.execute("SELECT message_id, attachment_id FROM message_attachment_join"):
+                message_attachment_pairs[(str(row[0]), str(row[1]))] += 1
 
-        referenced_attachment_ids = {
-            attachment_id for _, attachment_id in message_attachment_pairs
-        }
+        referenced_attachment_ids = {attachment_id for _, attachment_id in message_attachment_pairs}
         unreferenced_attachment_ids = sorted(
             attachment_ids - referenced_attachment_ids,
             key=lambda value: (len(value), value),
@@ -110,7 +100,7 @@ def _imessage_inventory(path: Path) -> dict[str, Any]:
                 "source_orphan_messages": len(orphan_message_ids),
                 "expected_parser_records": sum(parser_pairs.values()),
                 "source_attachment_rows": len(attachment_ids),
-                "source_message_attachment_links": len(message_attachment_pairs),
+                "source_message_attachment_links": sum(message_attachment_pairs.values()),
                 "source_unreferenced_attachments": len(unreferenced_attachment_ids),
             },
         }
@@ -193,22 +183,26 @@ def reconcile_bundle(bundle_dir: Path, source_path: Path) -> dict[str, Any]:
             for record in message_errors
             if record.get("source_message_id") is not None
         }
-        actual_attachment_pairs: set[tuple[str, str]] = set()
+        emitted_message_ids: set[str] = set()
+        actual_attachment_pairs: Counter[tuple[str, str]] = Counter()
         for record in messages:
-            source_message_id = record.get("source_message_id")
-            if source_message_id is None:
+            source_message_id_raw = record.get("source_message_id")
+            if source_message_id_raw is None:
                 continue
+            source_message_id = str(source_message_id_raw)
+            if source_message_id in emitted_message_ids:
+                continue
+            emitted_message_ids.add(source_message_id)
             for attachment in record.get("attachments") or []:
                 if isinstance(attachment, dict) and attachment.get("source_attachment_id") is not None:
-                    actual_attachment_pairs.add(
-                        (str(source_message_id), str(attachment["source_attachment_id"]))
-                    )
+                    actual_attachment_pairs[
+                        (source_message_id, str(attachment["source_attachment_id"]))
+                    ] += 1
 
-        accounted_attachment_pairs = actual_attachment_pairs | {
-            pair
-            for pair in inventory["message_attachment_pairs"]
-            if pair[0] in errored_message_ids
-        }
+        accounted_attachment_pairs = actual_attachment_pairs.copy()
+        for pair, pair_count in inventory["message_attachment_pairs"].items():
+            if pair[0] in errored_message_ids and pair[0] not in emitted_message_ids:
+                accounted_attachment_pairs[pair] = pair_count
 
         checks.update(
             {
