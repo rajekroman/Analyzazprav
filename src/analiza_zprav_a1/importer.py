@@ -15,7 +15,7 @@ from .parsers.imessage import IMessageParser
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.3.0"
+IMESSAGE_PARSER_VERSION = "0.4.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
@@ -37,6 +37,40 @@ class ImportStats:
     errors_jsonl: str
     manifest: str
     source_sha256: str
+
+
+def _source_record_key(source_hash: str, source_type: str, record: MessageRecord) -> str:
+    """Return the deterministic identity of one physical source occurrence.
+
+    For Apple `chat.db`, `message.ROWID` identifies the physical source message
+    inside the immutable source snapshot. Conversation relations are deliberately
+    excluded so adding/removing a `chat_message_join` relation cannot change the
+    source message identity. Legacy adapters retain their v1 key material until
+    their own occurrence contracts are explicitly versioned.
+    """
+
+    if source_type == "imessage_chat_db":
+        return stable_message_key(source_hash, "message", record.source_message_id)
+    return stable_message_key(
+        source_hash,
+        record.source_guid or "",
+        record.source_message_id,
+        record.conversation_source_id,
+    )
+
+
+def _record_key_manifest(source_type: str) -> dict[str, str]:
+    if source_type == "imessage_chat_db":
+        return {
+            "algorithm": "sha256-unit-separator",
+            "version": "2",
+            "scope": "source_snapshot+message_rowid",
+        }
+    return {
+        "algorithm": "sha256-unit-separator",
+        "version": "1",
+        "scope": "legacy-adapter-record",
+    }
 
 
 def _write_records(
@@ -74,15 +108,19 @@ def _write_records(
                         "record_type": "message",
                         "source_type": source_type,
                         "source_sha256": source_hash,
-                        "source_record_key": stable_message_key(
-                            source_hash,
-                            record.source_guid or "",
-                            record.source_message_id,
-                            record.conversation_source_id,
+                        "source_record_key": _source_record_key(
+                            source_hash, source_type, record
                         ),
                     }
                 )
-                stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+                stream.write(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
                 stream.write("\n")
                 emitted += 1
             except Exception as exc:
@@ -94,7 +132,9 @@ def _write_records(
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 }
-                error_stream.write(json.dumps(error_payload, ensure_ascii=False, sort_keys=True))
+                error_stream.write(
+                    json.dumps(error_payload, ensure_ascii=False, sort_keys=True)
+                )
                 error_stream.write("\n")
 
     manifest = {
@@ -105,6 +145,7 @@ def _write_records(
             "sha256": source_hash,
         },
         "parser": {"name": parser_name, "version": parser_version},
+        "source_record_key": _record_key_manifest(source_type),
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
         },
@@ -137,7 +178,11 @@ def _write_records(
     )
 
 
-def import_imessage(chat_db: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+def import_imessage(
+    chat_db: Path,
+    output_dir: Path,
+    attachments_root: Path | None = None,
+) -> ImportStats:
     if not chat_db.is_file():
         raise FileNotFoundError(chat_db)
     if attachments_root is not None and not attachments_root.is_dir():
@@ -153,7 +198,11 @@ def import_imessage(chat_db: Path, output_dir: Path, attachments_root: Path | No
     )
 
 
-def import_imazing_csv(csv_path: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+def import_imazing_csv(
+    csv_path: Path,
+    output_dir: Path,
+    attachments_root: Path | None = None,
+) -> ImportStats:
     if not csv_path.is_file():
         raise FileNotFoundError(csv_path)
     if attachments_root is not None and not attachments_root.is_dir():
@@ -169,7 +218,11 @@ def import_imazing_csv(csv_path: Path, output_dir: Path, attachments_root: Path 
     )
 
 
-def import_generic_csv(csv_path: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+def import_generic_csv(
+    csv_path: Path,
+    output_dir: Path,
+    attachments_root: Path | None = None,
+) -> ImportStats:
     if not csv_path.is_file():
         raise FileNotFoundError(csv_path)
     if attachments_root is not None and not attachments_root.is_dir():
@@ -185,12 +238,20 @@ def import_generic_csv(csv_path: Path, output_dir: Path, attachments_root: Path 
     )
 
 
-def import_generic_json(json_path: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+def import_generic_json(
+    json_path: Path,
+    output_dir: Path,
+    attachments_root: Path | None = None,
+) -> ImportStats:
     if not json_path.is_file():
         raise FileNotFoundError(json_path)
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
-    source_type = "generic_message_jsonl" if json_path.suffix.lower() == ".jsonl" else "generic_message_json"
+    source_type = (
+        "generic_message_jsonl"
+        if json_path.suffix.lower() == ".jsonl"
+        else "generic_message_json"
+    )
     return _write_records(
         GenericJSONParser(json_path).iter_messages(),
         source_path=json_path,
