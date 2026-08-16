@@ -25,6 +25,8 @@ def _calendar_parts(message: CanonicalMessage) -> tuple[int | None, ...]:
 
 
 def build_features(grouped: dict[int, list[CanonicalMessage]]) -> dict[int, MessageFeatures]:
+    """Build membership-scoped features; the same canonical message may appear in multiple chats."""
+
     result: dict[int, MessageFeatures] = {}
     for conversation_id in sorted(grouped):
         previous: CanonicalMessage | None = None
@@ -41,7 +43,7 @@ def build_features(grouped: dict[int, list[CanonicalMessage]]) -> dict[int, Mess
             for attachment in message.attachments:
                 media_counts[attachment.media_type] = media_counts.get(attachment.media_type, 0) + 1
             calendar = _calendar_parts(message)
-            result[message.id] = MessageFeatures(
+            result[message.membership_id] = MessageFeatures(
                 char_count=len(clean or ""),
                 word_count=count_words(clean),
                 line_count=0 if clean is None else clean.count("\n") + 1,
