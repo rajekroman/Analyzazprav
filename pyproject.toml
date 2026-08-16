@@ -1,12 +1,14 @@
 [project]
 name = "analyzazprav"
 version = "0.1.0"
-description = "Local-first message normalization and analysis pipeline"
+description = "Local-first message import, normalization and analysis pipeline"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
+az-import = "analiza_zprav_a1.cli:main"
 az-normalize = "analyzazprav.normalization.cli:main"
+az-process = "analyzazprav.processing.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -14,3 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
