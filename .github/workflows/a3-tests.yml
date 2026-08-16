@@ -1,0 +1,23 @@
+name: A3 tests
+
+on:
+  push:
+    branches:
+      - agent/a3-processing-classification
+  pull_request:
+    paths:
+      - 'database/a3_schema.sql'
+      - 'src/analyzazprav/processing/**'
+      - 'tests/test_a3*.py'
+      - '.github/workflows/a3-tests.yml'
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run A3 unit and real A2 contract tests
+        run: python -m unittest discover -s tests -p 'test_a3*.py' -v
