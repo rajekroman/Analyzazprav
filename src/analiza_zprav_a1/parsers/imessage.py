@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from ..apple_time import apple_timestamp_precision, apple_timestamp_to_iso
+from ..attachment_reconciliation import ATTACHMENT_RELATION_PAYLOAD_KEY
 from ..jsonsafe import json_safe
 from ..models import AttachmentRecord, ConversationSourceRecord, MessageRecord
 from ..text_decode import decode_attributed_body
@@ -40,8 +41,12 @@ class IMessageParser:
 
         with self._connect() as conn:
             tables = self._tables(conn)
-            participant_cache: dict[int, list[str]] = {}
-            conversation_cache: dict[int, dict[str, object]] = {}
+            participant_cache: dict[
+                int, tuple[list[str], list[dict[str, Any]]]
+            ] = {}
+            conversation_cache: dict[
+                int, tuple[dict[str, object], str]
+            ] = {}
             mcols = self._columns(conn, "message")
             if not mcols:
                 raise ValueError("The source DB does not contain an Apple Messages 'message' table")
@@ -64,15 +69,17 @@ class IMessageParser:
 
             if "handle_id" in mcols and "handle" in tables:
                 handle_expr = "h.id AS _sender_handle"
+                handle_rowid_expr = "h.ROWID AS _sender_handle_rowid"
                 handle_join = "LEFT JOIN handle h ON h.ROWID=m.handle_id"
             else:
                 handle_expr = "NULL AS _sender_handle"
+                handle_rowid_expr = "NULL AS _sender_handle_rowid"
                 handle_join = ""
 
             query = f"""
             SELECT m.*, m.ROWID AS _message_rowid,
                    {guid_expr}, {text_expr}, {attributed_expr}, {service_expr},
-                   {handle_expr}, {reply_expr}
+                   {handle_expr}, {handle_rowid_expr}, {reply_expr}
             FROM message m
             {handle_join}
             ORDER BY m.date, m.ROWID
@@ -112,6 +119,7 @@ class IMessageParser:
                     for key in row.keys()
                     if not key.startswith("_")
                 }
+                sender_relation = self._sender_relation(row, mcols, tables)
 
                 yield MessageRecord(
                     source_message_id=str(message_rowid),
@@ -132,16 +140,59 @@ class IMessageParser:
                     reply_to_guid=row["_reply_to_guid"],
                     attachments=self._attachments_for(conn, message_rowid),
                     raw_payload=raw_payload,
-                    metadata={},
+                    metadata={"_a1_sender_relation": sender_relation},
                 )
+
+    @staticmethod
+    def _sender_relation(
+        row: sqlite3.Row,
+        message_columns: set[str],
+        tables: set[str],
+    ) -> dict[str, Any]:
+        if "handle_id" not in message_columns:
+            return {
+                "raw_handle_id": None,
+                "resolution_status": "handle_id_column_missing",
+            }
+
+        raw_handle_id = row["handle_id"]
+        if raw_handle_id is None:
+            return {
+                "raw_handle_id": None,
+                "resolution_status": "missing_handle_id",
+            }
+        if "handle" not in tables:
+            return {
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": "handle_table_missing",
+            }
+
+        resolved_rowid = row["_sender_handle_rowid"]
+        handle_value = row["_sender_handle"]
+        if resolved_rowid is None:
+            return {
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": "missing_handle_row",
+            }
+
+        result: dict[str, Any] = {
+            "raw_handle_id": raw_handle_id,
+            "resolved_handle_rowid": int(resolved_rowid),
+            "resolution_status": (
+                "handle_value_null" if handle_value is None else "resolved"
+            ),
+        }
+        if handle_value is not None:
+            result["handle"] = str(handle_value)
+        return result
 
     def _conversation_sources_for_message(
         self,
         conn: sqlite3.Connection,
         message_id: int,
         tables: set[str],
-        participant_cache: dict[int, list[str]],
-        conversation_cache: dict[int, dict[str, object]],
+        participant_cache: dict[int, tuple[list[str], list[dict[str, Any]]]],
+        conversation_cache: dict[int, tuple[dict[str, object], str]],
         message_service: str | None,
     ) -> list[ConversationSourceRecord]:
         if "chat_message_join" not in tables:
@@ -169,14 +220,23 @@ class IMessageParser:
             if chat_id not in conversation_cache:
                 conversation_cache[chat_id] = self._conversation_metadata(conn, chat_id, tables)
 
-            participants = participant_cache[chat_id]
-            chat_metadata = dict(conversation_cache[chat_id])
-            raw_guid = chat_metadata.get("guid")
+            participants, participant_relations = participant_cache[chat_id]
+            source_chat_metadata, chat_resolution = conversation_cache[chat_id]
+            chat_metadata = dict(source_chat_metadata)
+            chat_metadata["_a1_source_relation"] = {
+                "chat": {
+                    "raw_chat_rowid": chat_id,
+                    "resolution_status": chat_resolution,
+                },
+                "participant_relations": [dict(item) for item in participant_relations],
+            }
+
+            raw_guid = source_chat_metadata.get("guid")
             chat_guid = str(raw_guid).strip() if raw_guid not in (None, "") else None
             source_conversation_key = (
                 f"guid:{chat_guid}" if chat_guid else f"rowid:{chat_id}"
             )
-            raw_service = chat_metadata.get("service_name") or chat_metadata.get("service")
+            raw_service = source_chat_metadata.get("service_name") or source_chat_metadata.get("service")
             relation_service = (
                 str(raw_service)
                 if raw_service not in (None, "")
@@ -197,34 +257,90 @@ class IMessageParser:
     @staticmethod
     def _participants_for_chat(
         conn: sqlite3.Connection, chat_id: int, tables: set[str]
-    ) -> list[str]:
-        if "chat_handle_join" not in tables or "handle" not in tables:
-            return []
-        rows = conn.execute(
-            """
-            SELECT h.id
-            FROM chat_handle_join chj
-            JOIN handle h ON h.ROWID=chj.handle_id
-            WHERE chj.chat_id=?
-            ORDER BY h.ROWID
-            """,
-            (chat_id,),
-        )
-        return [str(row[0]) for row in rows if row[0] is not None]
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if "chat_handle_join" not in tables:
+            return [], []
+
+        if "handle" in tables:
+            rows = conn.execute(
+                """
+                SELECT chj.handle_id AS raw_handle_id,
+                       h.ROWID AS resolved_handle_rowid,
+                       h.id AS handle_value
+                FROM chat_handle_join chj
+                LEFT JOIN handle h ON h.ROWID=chj.handle_id
+                WHERE chj.chat_id=?
+                ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
+                         chj.handle_id,
+                         h.ROWID
+                """,
+                (chat_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT chj.handle_id AS raw_handle_id,
+                       NULL AS resolved_handle_rowid,
+                       NULL AS handle_value
+                FROM chat_handle_join chj
+                WHERE chj.chat_id=?
+                ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
+                         chj.handle_id
+                """,
+                (chat_id,),
+            ).fetchall()
+
+        handles: list[str] = []
+        relations: list[dict[str, Any]] = []
+        for ordinal, row in enumerate(rows):
+            raw_handle_id = row["raw_handle_id"]
+            resolved_rowid = row["resolved_handle_rowid"]
+            handle_value = row["handle_value"]
+            if raw_handle_id is None:
+                status = "missing_handle_id"
+            elif "handle" not in tables:
+                status = "handle_table_missing"
+            elif resolved_rowid is None:
+                status = "missing_handle_row"
+            elif handle_value is None:
+                status = "handle_value_null"
+            else:
+                status = "resolved"
+                handles.append(str(handle_value))
+
+            relation: dict[str, Any] = {
+                "source_relation_ordinal": ordinal,
+                "raw_chat_rowid": chat_id,
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": status,
+            }
+            if resolved_rowid is not None:
+                relation["resolved_handle_rowid"] = int(resolved_rowid)
+            if handle_value is not None:
+                relation["handle"] = str(handle_value)
+            relations.append(relation)
+        return handles, relations
 
     @staticmethod
     def _conversation_metadata(
         conn: sqlite3.Connection, chat_id: int, tables: set[str]
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], str]:
         if "chat" not in tables:
-            return {}
+            return {}, "chat_table_missing"
         row = conn.execute(
             "SELECT c.*, c.ROWID AS _chat_rowid FROM chat c WHERE c.ROWID=?",
             (chat_id,),
         ).fetchone()
         if row is None:
-            return {}
-        return {key: json_safe(row[key]) for key in row.keys() if not key.startswith("_")}
+            return {}, "missing_chat_row"
+        return (
+            {
+                key: json_safe(row[key])
+                for key in row.keys()
+                if not key.startswith("_")
+            },
+            "resolved",
+        )
 
     def _attachments_for(self, conn: sqlite3.Connection, message_id: int) -> list[AttachmentRecord]:
         tables = self._tables(conn)
@@ -232,17 +348,36 @@ class IMessageParser:
             return []
         rows = conn.execute(
             """
-            SELECT a.*, a.ROWID AS _attachment_rowid
+            SELECT maj.ROWID AS _relation_rowid,
+                   maj.message_id AS _relation_message_id,
+                   maj.attachment_id AS _relation_attachment_id,
+                   a.*, a.ROWID AS _attachment_rowid
             FROM message_attachment_join maj
             JOIN attachment a ON a.ROWID=maj.attachment_id
             WHERE maj.message_id=?
-            ORDER BY a.ROWID
+            ORDER BY a.ROWID, maj.ROWID
             """,
             (message_id,),
-        )
+        ).fetchall()
         records: list[AttachmentRecord] = []
-        for row in rows:
+        for ordinal, row in enumerate(rows):
             keys = set(row.keys())
+            raw_payload = {
+                key: json_safe(row[key])
+                for key in row.keys()
+                if not key.startswith("_")
+            }
+            if ATTACHMENT_RELATION_PAYLOAD_KEY in raw_payload:
+                raise ValueError(
+                    "Apple attachment source row collides with reserved A1 relation provenance key"
+                )
+            raw_payload[ATTACHMENT_RELATION_PAYLOAD_KEY] = {
+                "source_relation_ordinal": ordinal,
+                "raw_join_rowid": int(row["_relation_rowid"]),
+                "raw_message_id": int(row["_relation_message_id"]),
+                "raw_attachment_id": int(row["_relation_attachment_id"]),
+                "resolution_status": "resolved",
+            }
             records.append(
                 AttachmentRecord(
                     source_attachment_id=str(row["_attachment_rowid"]),
@@ -251,11 +386,7 @@ class IMessageParser:
                     transfer_name=row["transfer_name"] if "transfer_name" in keys else None,
                     total_bytes=row["total_bytes"] if "total_bytes" in keys else None,
                     source_path=row["filename"] if "filename" in keys else None,
-                    raw_payload={
-                        key: json_safe(row[key])
-                        for key in row.keys()
-                        if not key.startswith("_")
-                    },
+                    raw_payload=raw_payload,
                 )
             )
         return records

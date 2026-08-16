@@ -3,23 +3,25 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from .apple_event_metadata import project_apple_event_metadata
+from .attachment_reconciliation import reconcile_bundle, write_reconciliation
 from .attachments import resolve_attachments
 from .csv_mapping import CSVMappingProfile
 from .hashing import sha256_file, stable_message_key
+from .imessage_preflight import validate_imessage_snapshot
 from .models import MessageRecord
 from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
-from .reconciliation import reconcile_bundle, write_reconciliation
+from .sqlite_schema import inventory_sqlite_schema, write_schema_inventory
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.6.0"
+IMESSAGE_PARSER_VERSION = "0.10.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
@@ -102,6 +104,7 @@ def _write_records(
     source_name_override: str | None = None,
     source_metadata: Mapping[str, object] | None = None,
     parser_metadata: Mapping[str, object] | None = None,
+    source_schema_inventory: Mapping[str, Any] | None = None,
     reconciliation_sqlite_snapshot: Path | None = None,
 ) -> ImportStats:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +112,11 @@ def _write_records(
     manifest_path = output_dir / "manifest.json"
     errors_jsonl = output_dir / "errors.jsonl"
     reconciliation_path = output_dir / "reconciliation.json"
+    schema_path = output_dir / "schema.json"
     source_hash = source_hash_override or sha256_file(source_path)
+
+    if source_schema_inventory is not None:
+        write_schema_inventory(dict(source_schema_inventory), schema_path)
 
     seen = emitted = attachments = resolved = missing = message_errors = 0
     with (
@@ -169,6 +176,13 @@ def _write_records(
     }
     if source_metadata:
         source_manifest.update(source_metadata)
+    if source_schema_inventory is not None:
+        source_manifest.update(
+            {
+                "schema_inventory_version": source_schema_inventory.get("inventory_version"),
+                "schema_signature_sha256": source_schema_inventory.get("signature_sha256"),
+            }
+        )
 
     parser_manifest: dict[str, object] = {
         "name": parser_name,
@@ -176,6 +190,14 @@ def _write_records(
     }
     if parser_metadata:
         parser_manifest.update(parser_metadata)
+
+    outputs: dict[str, str] = {
+        "messages": output_jsonl.name,
+        "errors": errors_jsonl.name,
+        "reconciliation": reconciliation_path.name,
+    }
+    if source_schema_inventory is not None:
+        outputs["schema"] = schema_path.name
 
     manifest: dict[str, object] = {
         "contract_version": A1_CONTRACT_VERSION,
@@ -185,11 +207,7 @@ def _write_records(
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
         },
-        "outputs": {
-            "messages": output_jsonl.name,
-            "errors": errors_jsonl.name,
-            "reconciliation": reconciliation_path.name,
-        },
+        "outputs": outputs,
         "counts": {
             "messages_seen": seen,
             "messages_emitted": emitted,
@@ -272,11 +290,13 @@ def import_imessage(
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
 
-    # Never hash the live main database file while parsing a potentially
-    # different logical state from its WAL. SQLite backup produces one immutable
-    # logical snapshot; A1 hashes, parses and reconciles that exact snapshot.
+    # One immutable logical snapshot is the source of truth for validation,
+    # content hash, parsing, schema inventory and reconciliation. Preflight is
+    # deliberately completed before _write_records creates staging artifacts.
     with consistent_sqlite_snapshot(chat_db) as snapshot:
+        validate_imessage_snapshot(snapshot)
         snapshot_hash = sha256_file(snapshot)
+        schema_inventory = inventory_sqlite_schema(snapshot)
         return _write_records(
             IMessageParser(snapshot).iter_messages(),
             source_path=chat_db,
@@ -291,6 +311,7 @@ def import_imessage(
                 "snapshot_method": "sqlite_online_backup_v1",
                 "snapshot_includes_committed_wal": True,
             },
+            source_schema_inventory=schema_inventory,
             reconciliation_sqlite_snapshot=snapshot,
         )
 

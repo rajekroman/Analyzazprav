@@ -84,7 +84,7 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     assert manifest["source"]["snapshot_includes_committed_wal"] is True
     assert manifest["counts"]["messages_seen"] == 1
     assert manifest["counts"]["messages_emitted"] == 1
-    assert manifest["parser"]["version"] == "0.6.0"
+    assert manifest["parser"]["version"] == "0.10.0"
     assert manifest["source_record_key"]["version"] == "2"
     assert manifest["source_record_key"]["scope"] == "source_snapshot+message_rowid"
 
@@ -102,6 +102,10 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     assert relation["raw_chat_rowid"] == 7
     assert relation["chat_guid"] == "iMessage;-;+420123456789"
     assert relation["participant_handles"] == ["+420123456789", "+420987654321"]
+    assert relation["metadata"]["_a1_source_relation"]["chat"] == {
+        "raw_chat_rowid": 7,
+        "resolution_status": "resolved",
+    }
     assert record["sender_handle"] == "+420123456789"
     assert record["conversation_participant_handles"] == ["+420123456789", "+420987654321"]
     assert record["conversation_metadata"]["guid"] == "iMessage;-;+420123456789"
