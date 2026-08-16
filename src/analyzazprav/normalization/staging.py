@@ -15,6 +15,7 @@ from .membership import (
     link_message_conversation,
     message_source_pk,
 )
+from .relations import add_source_relation, resolve_source_relation
 
 SUPPORTED_A1_CONTRACT_VERSIONS = {"1"}
 
@@ -68,6 +69,7 @@ class StagingIngestResult:
     messages: int = 0
     attachments: int = 0
     relations: int = 0
+    source_relations: int = 0
     conversation_relations: int = 0
 
 
@@ -230,8 +232,9 @@ def ingest_a1_staging_bundle(
     """Ingest an A1 ``manifest.json`` + ``messages.jsonl`` staging bundle.
 
     A1 remains source extraction only. A2 owns canonical entities and preserves
-    every source message occurrence, every source conversation relation and every
-    attachment occurrence without relying on database-local ROWIDs as global IDs.
+    every source message occurrence, every source conversation relation, every
+    explicit source message relation and every attachment occurrence without
+    relying on database-local ROWIDs as global IDs.
 
     The audit ``import_run`` is committed first. All canonical/source writes for
     a non-idempotent run are then one atomic SQLite transaction: either the whole
@@ -284,8 +287,9 @@ def ingest_a1_staging_bundle(
         return StagingIngestResult(import_run_id=run.id, already_imported=True)
 
     atomic_conn = _start_atomic_import(db)
-    message_count = attachment_count = relation_count = conversation_relation_count = 0
-    pending_relations: list[tuple[int, str, str | None]] = []
+    message_count = attachment_count = relation_count = 0
+    source_relation_count = conversation_relation_count = 0
+    pending_relations: list[tuple[int, int, str, str | None]] = []
 
     try:
         for record in _load_json_lines(messages_path):
@@ -465,8 +469,24 @@ def ingest_a1_staging_bundle(
 
             reply_to_guid = record.get("reply_to_guid")
             if reply_to_guid:
+                reply_guid = str(reply_to_guid)
+                relation_service = None if service is None else str(service)
+                source_relation_id = add_source_relation(
+                    db,
+                    message_source_id=source_pk,
+                    import_run_id=run.id,
+                    source_record_key=source_record_key,
+                    relation_type="reply_to",
+                    target_source_guid=reply_guid,
+                    target_service=relation_service,
+                    metadata={
+                        "source": "a1.reply_to_guid",
+                        "target_guid": reply_guid,
+                    },
+                )
+                source_relation_count += 1
                 pending_relations.append(
-                    (message_id, str(reply_to_guid), None if service is None else str(service))
+                    (source_relation_id, message_id, reply_guid, relation_service)
                 )
 
         expected_messages = counts.get("messages_seen")
@@ -480,15 +500,19 @@ def ingest_a1_staging_bundle(
                 f"A1 manifest attachments_seen={expected_attachments} but JSONL contains {attachment_count} attachment records"
             )
 
-        for source_message_pk, reply_guid, service in pending_relations:
+        for source_relation_id, source_message_pk, reply_guid, service in pending_relations:
             target_message_pk = db.find_message_by_guid(reply_guid, service)
             if target_message_pk is None:
                 continue
-            db.add_relation(
-                source_message_pk,
-                target_message_pk,
-                "reply_to",
-                {"source": "a1.reply_to_guid", "target_guid": reply_guid},
+            resolve_source_relation(
+                db,
+                source_relation_id=source_relation_id,
+                source_message_id=source_message_pk,
+                target_message_id=target_message_pk,
+                canonical_metadata={
+                    "source": "a1.reply_to_guid",
+                    "target_guid": reply_guid,
+                },
             )
             relation_count += 1
 
@@ -498,6 +522,7 @@ def ingest_a1_staging_bundle(
                 "messages": message_count,
                 "attachments": attachment_count,
                 "relations": relation_count,
+                "source_relations": source_relation_count,
                 "conversation_relations": conversation_relation_count,
             },
         )
@@ -514,6 +539,7 @@ def ingest_a1_staging_bundle(
                 "messages": message_count,
                 "attachments": attachment_count,
                 "relations": relation_count,
+                "source_relations": source_relation_count,
                 "conversation_relations": conversation_relation_count,
             },
         )
@@ -525,5 +551,6 @@ def ingest_a1_staging_bundle(
         messages=message_count,
         attachments=attachment_count,
         relations=relation_count,
+        source_relations=source_relation_count,
         conversation_relations=conversation_relation_count,
     )
