@@ -74,15 +74,19 @@ def build_daily_metrics(
     initiations: Counter[tuple[int, str]] = Counter()
     seen_sessions: set[int] = set()
     for turn in turns:
+        first_turn_of_session = turn.session_id not in seen_sessions
+        if first_turn_of_session:
+            # A session is initiated by its literal first turn. If that sender is
+            # unknown, initiation remains unknown; a later known sender must not
+            # inherit it merely because attribution became possible later.
+            seen_sessions.add(turn.session_id)
         if turn.participant_id is None:
             continue
         period = turn_date.get(turn.turn_id)
         if period:
             turn_counts[(turn.participant_id, period)] += 1
-        if turn.session_id not in seen_sessions:
-            seen_sessions.add(turn.session_id)
-            if period:
-                initiations[(turn.participant_id, period)] += 1
+        if first_turn_of_session and period:
+            initiations[(turn.participant_id, period)] += 1
 
     latency_by_key: dict[tuple[int, str], list[float]] = defaultdict(list)
     effort_by_key: dict[tuple[int, str], list[float]] = defaultdict(list)
@@ -285,15 +289,16 @@ def build_period_metrics(
     initiations: Counter[tuple[int, str]] = Counter()
     seen_sessions: set[int] = set()
     for turn in turns:
+        first_turn_of_session = turn.session_id not in seen_sessions
+        if first_turn_of_session:
+            seen_sessions.add(turn.session_id)
         if turn.participant_id is None:
             continue
         period = turn_period.get(turn.turn_id)
         if period:
             turn_counts[(turn.participant_id, period)] += 1
-        if turn.session_id not in seen_sessions:
-            seen_sessions.add(turn.session_id)
-            if period:
-                initiations[(turn.participant_id, period)] += 1
+        if first_turn_of_session and period:
+            initiations[(turn.participant_id, period)] += 1
 
     latency_by_key: dict[tuple[int, str], list[float]] = defaultdict(list)
     effort_by_key: dict[tuple[int, str], list[float]] = defaultdict(list)
