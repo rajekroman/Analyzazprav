@@ -27,13 +27,6 @@ def load_schema_inventory(path: Path) -> dict[str, Any]:
     if not isinstance(signature, str) or not signature:
         raise ValueError("Schema inventory requires signature_sha256")
 
-    signed_payload = {key: item for key, item in value.items() if key != "signature_sha256"}
-    actual_signature = schema_signature(signed_payload)
-    if actual_signature != signature:
-        raise ValueError(
-            "Schema inventory signature_sha256 does not match its canonical payload"
-        )
-
     tables = value.get("tables")
     if not isinstance(tables, list):
         raise ValueError("Schema inventory tables must be an array")
@@ -48,6 +41,13 @@ def load_schema_inventory(path: Path) -> dict[str, Any]:
         names.append(name)
     if len(names) != len(set(names)):
         raise ValueError("Schema inventory contains duplicate table names")
+
+    signed_payload = {key: item for key, item in value.items() if key != "signature_sha256"}
+    actual_signature = schema_signature(signed_payload)
+    if actual_signature != signature:
+        raise ValueError(
+            "Schema inventory signature_sha256 does not match its canonical payload"
+        )
     return value
 
 
