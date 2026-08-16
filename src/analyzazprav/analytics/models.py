@@ -6,7 +6,7 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class AnalyticMessage:
-    """A4 read model built from A2 analysis_messages + A3 processed_message."""
+    """A4 read model built from one A2 conversation membership + A3 features."""
 
     message_id: int
     conversation_id: int
@@ -26,6 +26,7 @@ class AnalyticMessage:
     utc_hour: int | None = None
     local_weekday: int | None = None
     local_hour: int | None = None
+    membership_id: int | None = None
 
     @property
     def period_date(self) -> str | None:
