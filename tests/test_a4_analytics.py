@@ -31,6 +31,10 @@ def message(
     exclamations: int = 0,
     utc_date: str | None = None,
     local_date: str | None = None,
+    utc_weekday: int | None = None,
+    utc_hour: int | None = None,
+    local_weekday: int | None = None,
+    local_hour: int | None = None,
 ) -> AnalyticMessage:
     return AnalyticMessage(
         message_id=message_id,
@@ -46,6 +50,10 @@ def message(
         exclamation_mark_count=exclamations,
         utc_date=utc_date,
         local_date=local_date,
+        utc_weekday=utc_weekday,
+        utc_hour=utc_hour,
+        local_weekday=local_weekday,
+        local_hour=local_hour,
     )
 
 
@@ -81,9 +89,13 @@ def create_contract_db() -> sqlite3.Connection:
             utc_year INTEGER,
             utc_month INTEGER,
             utc_day INTEGER,
+            utc_weekday INTEGER,
+            utc_hour INTEGER,
             local_year INTEGER,
             local_month INTEGER,
-            local_day INTEGER
+            local_day INTEGER,
+            local_weekday INTEGER,
+            local_hour INTEGER
         );
         INSERT INTO participant VALUES (1), (2);
         INSERT INTO conversation VALUES (10);
@@ -94,8 +106,10 @@ def create_contract_db() -> sqlite3.Connection:
             (1, 10, 1, 0),
             (2, 10, 2, 60000000);
         INSERT INTO processed_message VALUES
-            (1, 'ahoj?', 1, 1, 1, 5, 1, 0, 0, 2026, 1, 1, 2026, 1, 2),
-            (2, 'čau', 1, 2, 1, 3, 0, 0, 0, 2026, 1, 1, 2026, 1, 2);
+            (1, 'ahoj?', 1, 1, 1, 5, 1, 0, 0,
+             2026, 1, 1, 3, 23, 2026, 1, 2, 4, 1),
+            (2, 'čau', 1, 2, 1, 3, 0, 0, 0,
+             2026, 1, 1, 3, 23, 2026, 1, 2, 4, 12);
         """
     )
     return conn
@@ -134,6 +148,31 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(len(result.response_samples), 1)
         self.assertIsNone(result.response_samples[0].latency_seconds)
         self.assertEqual(result.response_samples[0].response_effort_ratio, 0.5)
+        self.assertEqual(result.participant_metrics[2]["response_turn_count"], 1)
+        self.assertEqual(result.participant_metrics[2]["latency_sample_count"], 0)
+
+    def test_latency_distribution_and_unanswered_turns(self) -> None:
+        source = [
+            message(1, 1, 0),
+            message(2, 2, 10),
+            message(3, 1, 15),
+            message(4, 2, 35),
+            message(5, 1, 40),
+            message(6, 2, 70),
+            message(7, 1, 75),
+            message(8, 2, 115),
+        ]
+        result = analyze_conversation(source)
+        metrics = result.participant_metrics[2]
+        self.assertEqual(metrics["response_turn_count"], 4)
+        self.assertEqual(metrics["latency_sample_count"], 4)
+        self.assertEqual(metrics["unanswered_turn_count"], 1)
+        self.assertEqual(metrics["mean_response_latency_seconds"], 25)
+        self.assertEqual(metrics["median_response_latency_seconds"], 25)
+        self.assertEqual(metrics["p25_response_latency_seconds"], 17.5)
+        self.assertEqual(metrics["p75_response_latency_seconds"], 32.5)
+        self.assertEqual(metrics["p90_response_latency_seconds"], 37.0)
+        self.assertEqual(result.participant_metrics[1]["unanswered_turn_count"], 0)
 
     def test_unknown_sender_is_preserved_but_not_attributed(self) -> None:
         result = analyze_conversation([message(1, None, 0), message(2, 1, 10)])
@@ -141,7 +180,7 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(result.unknown_sender_message_count, 1)
         self.assertEqual(set(result.participant_metrics), {1})
 
-    def test_adapter_prefers_a3_local_calendar_date(self) -> None:
+    def test_adapter_prefers_a3_local_calendar_and_clock_fields(self) -> None:
         conn = create_contract_db()
         result = analyze_database(conn)[0]
         self.assertEqual(result.conversation_id, 10)
@@ -149,6 +188,58 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(result.response_samples[0].latency_seconds, 60)
         self.assertEqual({row.period_date for row in result.daily_metrics}, {"2026-01-02"})
         self.assertEqual({row.date_basis for row in result.daily_metrics}, {"local"})
+        participant_one_hours = [
+            row for row in result.time_buckets
+            if row.participant_id == 1 and row.bucket_kind == "hour"
+        ]
+        self.assertEqual(len(participant_one_hours), 1)
+        self.assertEqual(participant_one_hours[0].time_basis, "local")
+        self.assertEqual(participant_one_hours[0].bucket_value, "01")
+
+    def test_time_buckets_use_local_then_utc_fallback(self) -> None:
+        result = analyze_conversation(
+            [
+                message(1, 1, 0, local_weekday=5, local_hour=1),
+                message(2, 1, 10, local_weekday=1, local_hour=12),
+                message(3, 1, 20, utc_weekday=6, utc_hour=2),
+            ]
+        )
+        metrics = result.participant_metrics[1]
+        self.assertEqual(metrics["clock_known_message_count"], 3)
+        self.assertEqual(metrics["weekend_message_count"], 2)
+        self.assertEqual(metrics["night_message_count"], 2)
+        local_hour_one = [
+            row for row in result.time_buckets
+            if row.time_basis == "local"
+            and row.bucket_kind == "hour"
+            and row.bucket_value == "01"
+        ]
+        utc_hour_two = [
+            row for row in result.time_buckets
+            if row.time_basis == "utc"
+            and row.bucket_kind == "hour"
+            and row.bucket_value == "02"
+        ]
+        self.assertEqual(local_hour_one[0].source_message_ids, (1,))
+        self.assertEqual(utc_hour_two[0].source_message_ids, (3,))
+
+    def test_long_silence_identifies_return_participant(self) -> None:
+        result = analyze_conversation(
+            [
+                message(1, 1, 0, session=1),
+                message(2, 2, 60, session=1),
+                message(3, 1, 90_060, session=2),
+            ],
+            AnalyticsConfig(long_silence_seconds=24 * 60 * 60),
+        )
+        self.assertEqual(len(result.silence_events), 1)
+        event = result.silence_events[0]
+        self.assertEqual(event.previous_session_id, 1)
+        self.assertEqual(event.next_session_id, 2)
+        self.assertEqual(event.gap_seconds, 90_000)
+        self.assertEqual(event.before_participant_id, 2)
+        self.assertEqual(event.return_participant_id, 1)
+        self.assertEqual(event.source_message_ids, (2, 3))
 
     def test_daily_series_keeps_zero_activity_days(self) -> None:
         result = analyze_conversation(
@@ -250,7 +341,7 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(regimes[0].regime_type, "mutual_approach")
         self.assertEqual(len(regimes[0].source_message_ids), 12)
 
-    def test_store_persists_responses_daily_series_and_change_points(self) -> None:
+    def test_store_persists_response_time_and_silence_outputs(self) -> None:
         conn = create_contract_db()
         result = analyze_database(conn)[0]
         store = AnalyticsStore(
@@ -268,6 +359,14 @@ class AnalyticsEngineTests(unittest.TestCase):
             "SELECT latency_seconds, response_effort_ratio FROM analysis_a4_responses"
         ).fetchone()
         self.assertEqual(response, (60.0, 1.0))
+        participant = conn.execute(
+            """SELECT response_turn_count, latency_sample_count, unanswered_turn_count,
+                      mean_response_latency_seconds, p90_response_latency_seconds
+               FROM analysis_a4_participants WHERE participant_id = 2"""
+        ).fetchone()
+        self.assertEqual(participant, (1, 1, 1, 60.0, 60.0))
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM analysis_a4_time_buckets").fetchone()[0], 8)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM analysis_a4_silences").fetchone()[0], 0)
         daily_count = conn.execute("SELECT COUNT(*) FROM analysis_a4_daily").fetchone()[0]
         self.assertEqual(daily_count, 2)
         period_count = conn.execute("SELECT COUNT(*) FROM analysis_a4_periods").fetchone()[0]
@@ -294,7 +393,14 @@ class AnalyticsEngineTests(unittest.TestCase):
         columns = {
             row[1] for row in conn.execute("PRAGMA table_info(analytics_response_latency)")
         }
+        participant_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(analytics_participant_summary)")
+        }
         self.assertIn("response_effort_ratio", columns)
+        self.assertIn("mean_response_latency_seconds", participant_columns)
+        self.assertTrue(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_time_bucket'"
+        ).fetchone())
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 2)
 
 
