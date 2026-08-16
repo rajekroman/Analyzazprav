@@ -4,7 +4,7 @@ import sqlite3
 
 import pandas as pd
 
-from a6.data import add_response_latency, analysis_packet, demo_messages, load_sqlite_messages
+from a6.data import add_response_latency, analysis_packet, demo_messages, filter_messages, load_sqlite_messages
 
 
 def test_demo_messages_are_canonical_and_sorted():
@@ -48,3 +48,17 @@ def test_analysis_packet_keeps_message_ids():
     packet = analysis_packet(frame, selected)
     assert packet["message_count"] == 2
     assert [item["message_id"] for item in packet["messages"]] == selected
+
+
+def test_empty_sender_filter_returns_no_messages():
+    frame = demo_messages()
+    assert filter_messages(frame, senders=[]).empty
+
+
+def test_response_latency_does_not_cross_conversations():
+    frame = pd.DataFrame([
+        {"message_id": "1", "conversation_id": "a", "contact": "x", "sender": "A", "timestamp": "2026-01-01T10:00:00Z", "text": "a"},
+        {"message_id": "2", "conversation_id": "b", "contact": "x", "sender": "B", "timestamp": "2026-01-01T10:01:00Z", "text": "b"},
+    ])
+    result = add_response_latency(frame)
+    assert result["response_seconds"].isna().all()
