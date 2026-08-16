@@ -7,6 +7,7 @@ from typing import Iterable, Mapping
 
 from .apple_event_metadata import project_apple_event_metadata
 from .attachments import resolve_attachments
+from .csv_mapping import CSVMappingProfile
 from .hashing import sha256_file, stable_message_key
 from .models import MessageRecord
 from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
@@ -22,8 +23,9 @@ IMESSAGE_PARSER_VERSION = "0.6.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
+GENERIC_CSV_PARSER_VERSION = "0.2.0"
 GENERIC_JSON_PARSER_NAME = "generic-message-json"
-GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
+GENERIC_JSON_PARSER_VERSION = "0.1.0"
 GENERIC_TEXT_PARSER_NAME = "generic-message-text"
 GENERIC_TEXT_PARSER_VERSION = "0.1.0"
 
@@ -99,6 +101,7 @@ def _write_records(
     source_hash_override: str | None = None,
     source_name_override: str | None = None,
     source_metadata: Mapping[str, object] | None = None,
+    parser_metadata: Mapping[str, object] | None = None,
     reconciliation_sqlite_snapshot: Path | None = None,
 ) -> ImportStats:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -167,10 +170,17 @@ def _write_records(
     if source_metadata:
         source_manifest.update(source_metadata)
 
+    parser_manifest: dict[str, object] = {
+        "name": parser_name,
+        "version": parser_version,
+    }
+    if parser_metadata:
+        parser_manifest.update(parser_metadata)
+
     manifest: dict[str, object] = {
         "contract_version": A1_CONTRACT_VERSION,
         "source": source_manifest,
-        "parser": {"name": parser_name, "version": parser_version},
+        "parser": parser_manifest,
         "source_record_key": _record_key_manifest(source_type),
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
@@ -309,17 +319,35 @@ def import_generic_csv(
     csv_path: Path,
     output_dir: Path,
     attachments_root: Path | None = None,
+    mapping_profile_path: Path | None = None,
 ) -> ImportStats:
     if not csv_path.is_file():
         raise FileNotFoundError(csv_path)
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
+
+    profile: CSVMappingProfile | None = None
+    parser_version = GENERIC_CSV_PARSER_VERSION
+    parser_metadata: dict[str, object] | None = None
+    if mapping_profile_path is not None:
+        profile = CSVMappingProfile.load(mapping_profile_path)
+        profile_hash = sha256_file(mapping_profile_path)
+        # A2 fingerprints parser.version. Binding the full profile digest into
+        # the effective version prevents two different explicit mappings of the
+        # same immutable CSV from collapsing into one canonical import run.
+        parser_version = f"{GENERIC_CSV_PARSER_VERSION}+profile.{profile_hash}"
+        parser_metadata = profile.manifest_metadata(
+            profile_name=mapping_profile_path.name,
+            sha256=profile_hash,
+        )
+
     return _write_records(
-        GenericCSVParser(csv_path).iter_messages(),
+        GenericCSVParser(csv_path, mapping_profile=profile).iter_messages(),
         source_path=csv_path,
         source_type="generic_message_csv",
         parser_name=GENERIC_CSV_PARSER_NAME,
-        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
+        parser_version=parser_version,
+        parser_metadata=parser_metadata,
         output_dir=output_dir,
         attachments_root=attachments_root,
     )
@@ -344,7 +372,7 @@ def import_generic_json(
         source_path=json_path,
         source_type=source_type,
         parser_name=GENERIC_JSON_PARSER_NAME,
-        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
+        parser_version=GENERIC_JSON_PARSER_VERSION,
         output_dir=output_dir,
         attachments_root=attachments_root,
     )
