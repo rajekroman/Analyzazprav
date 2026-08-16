@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS analytics_run (
     status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
     config_json TEXT NOT NULL DEFAULT '{}',
     conversation_count INTEGER NOT NULL DEFAULT 0,
-    input_message_count INTEGER NOT NULL DEFAULT 0
+    input_message_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(id, processing_run_id)
 );
 
 CREATE TABLE IF NOT EXISTS analytics_conversation_summary (
@@ -60,15 +61,20 @@ CREATE TABLE IF NOT EXISTS analytics_participant_summary (
 
 CREATE TABLE IF NOT EXISTS analytics_response_latency (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    analytics_run_id INTEGER NOT NULL,
+    processing_run_id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
-    session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
+    session_id INTEGER NOT NULL,
     from_participant_id INTEGER NOT NULL REFERENCES participant(id),
     responder_id INTEGER NOT NULL REFERENCES participant(id),
     previous_turn_id INTEGER NOT NULL,
     response_turn_id INTEGER NOT NULL,
     latency_seconds REAL CHECK(latency_seconds IS NULL OR latency_seconds >= 0),
-    response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0)
+    response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0),
+    FOREIGN KEY(analytics_run_id, processing_run_id)
+        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS analytics_time_bucket (
@@ -88,16 +94,23 @@ CREATE TABLE IF NOT EXISTS analytics_time_bucket (
 
 CREATE TABLE IF NOT EXISTS analytics_silence_event (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    analytics_run_id INTEGER NOT NULL,
+    processing_run_id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
-    previous_session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
-    next_session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
+    previous_session_id INTEGER NOT NULL,
+    next_session_id INTEGER NOT NULL,
     gap_seconds REAL NOT NULL CHECK(gap_seconds >= 0),
     previous_turn_id INTEGER NOT NULL,
     return_turn_id INTEGER NOT NULL,
     before_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
     return_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
-    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY(analytics_run_id, processing_run_id)
+        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, previous_session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, next_session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS analytics_daily_participant (
@@ -188,15 +201,20 @@ CREATE TABLE IF NOT EXISTS analytics_change_point (
 
 CREATE TABLE IF NOT EXISTS analytics_event (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    analytics_run_id INTEGER NOT NULL,
+    processing_run_id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
-    session_id INTEGER REFERENCES conversation_session(id) ON DELETE SET NULL,
+    session_id INTEGER,
     event_type TEXT NOT NULL,
     score REAL NOT NULL,
     start_at_utc_us INTEGER,
     end_at_utc_us INTEGER,
     factors_json TEXT NOT NULL DEFAULT '{}',
-    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY(analytics_run_id, processing_run_id)
+        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_a4_participant_conversation
