@@ -12,7 +12,7 @@ from .importer import (
     import_imazing_csv,
     import_imessage,
 )
-from .reconciliation import reconcile_bundle
+from .relation_reconciliation import reconcile_bundle
 from .source_detection import detect_source
 
 
