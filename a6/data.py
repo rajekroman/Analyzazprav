@@ -22,7 +22,7 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "conversation_id": ("conversation_id", "chat_id", "thread_id", "conversation"),
     "contact": ("contact", "contact_name", "conversation_title", "chat_name", "display_name"),
     "sender": ("sender", "sender_name", "participant_name", "author", "from_name"),
-    "timestamp": ("timestamp", "sent_at_utc", "created_at_utc", "date_utc", "sent_at", "created_at", "date"),
+    "timestamp": ("timestamp", "sent_at_utc_us", "sent_at_utc", "created_at_utc", "date_utc", "sent_at", "created_at", "date"),
     "text": ("text", "body", "message_text", "raw_text", "content"),
 }
 
@@ -152,9 +152,24 @@ def load_sqlite_messages(path: str | Path) -> tuple[pd.DataFrame, SourceInfo]:
     try:
         with _connect_read_only(path) as conn:
             frame = pd.read_sql_query(query, conn)
+            objects = set(_objects(conn))
+            if object_name == "analysis_messages" and "analysis_conversations" in objects:
+                conversations = pd.read_sql_query(
+                    "SELECT id AS conversation_id, title, canonical_key FROM analysis_conversations",
+                    conn,
+                )
+                frame = frame.merge(conversations, on="conversation_id", how="left")
+                frame["contact"] = (
+                    frame["title"]
+                    .fillna(frame["canonical_key"])
+                    .fillna(frame["conversation_id"].astype(str))
+                )
+                frame = frame.drop(columns=["title", "canonical_key"])
     except (sqlite3.Error, pd.errors.DatabaseError) as exc:
         raise DataSourceError(f"Chyba při čtení databáze: {exc}") from exc
 
+    if mapping.get("timestamp") == "sent_at_utc_us" and "timestamp" in frame:
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="us", errors="coerce", utc=True)
     if "conversation_id" not in frame:
         frame["conversation_id"] = "conversation"
     if "contact" not in frame:
