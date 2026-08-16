@@ -367,7 +367,10 @@ class CanonicalDatabase:
     def find_message_by_guid(self, guid: str, service: str | None = None) -> int | None:
         if service is None:
             row = self.conn.execute(
-                "SELECT id FROM message WHERE canonical_guid=? ORDER BY id LIMIT 1", (guid,)
+                """SELECT id FROM message
+                   WHERE service IS NULL AND canonical_guid=?
+                   ORDER BY id LIMIT 1""",
+                (guid,),
             ).fetchone()
         else:
             row = self.conn.execute(
