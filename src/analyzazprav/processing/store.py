@@ -10,7 +10,7 @@ from .pipeline import PROCESSING_VERSION, ProcessingConfig
 
 
 class ProcessingStore:
-    """Persistence for A3-derived data only; A2 canonical tables stay untouched."""
+    """Persistence for immutable A3-derived processing runs only."""
 
     def __init__(self, conn: sqlite3.Connection, schema_path: str | Path | None = None):
         self.conn = conn
@@ -20,6 +20,9 @@ class ProcessingStore:
     def _default_schema_path() -> Path:
         return Path(__file__).resolve().parents[3] / "database" / "a3_schema.sql"
 
+    # These are the already-integrated A3 v4 columns. A v4 database is a
+    # supported upgrade source and must not be rebuilt merely because v5 adds
+    # participant-resolution sidecars.
     _CURRENT_PROCESSED_COLUMNS = frozenset(
         {
             "processing_run_id",
@@ -55,6 +58,8 @@ class ProcessingStore:
     )
 
     def initialize(self) -> None:
+        """Initialize A3 schema without destroying an integrated A3 v4 history."""
+
         needs_rebuild = False
         processed = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='processed_message'"
@@ -79,13 +84,26 @@ class ProcessingStore:
         self.conn.executescript(self.schema_path.read_text(encoding="utf-8"))
 
     def _drop_derived_schema(self) -> None:
-        """Drop only rebuildable A3 tables when an older draft schema is detected."""
+        """Drop only obsolete pre-v4 A3 draft schemas, never supported v4 history."""
 
         self.conn.execute("PRAGMA foreign_keys = OFF")
         try:
             with self.conn:
-                self.conn.execute("DROP VIEW IF EXISTS analysis_processed_messages_latest")
+                for view in (
+                    "analysis_sender_runs_resolved_latest",
+                    "analysis_processed_messages_resolved_latest",
+                    "analysis_participant_aliases_latest",
+                    "analysis_resolved_participants_latest",
+                    "analysis_processed_messages_latest",
+                ):
+                    self.conn.execute(f"DROP VIEW IF EXISTS {view}")
                 for table in (
+                    "processed_message_resolved_sender",
+                    "sender_run_resolved_participant",
+                    "participant_resolution_candidate",
+                    "participant_alias",
+                    "resolved_participant_member",
+                    "resolved_participant",
                     "processed_message",
                     "a3_duplicate_candidate",
                     "conversation_thread_message",
@@ -95,6 +113,7 @@ class ProcessingStore:
                     "processing_run",
                 ):
                     self.conn.execute(f"DROP TABLE IF EXISTS {table}")
+                self.conn.execute("DROP TRIGGER IF EXISTS trg_participant_alias_identity_match")
         finally:
             self.conn.execute("PRAGMA foreign_keys = ON")
 
@@ -134,6 +153,73 @@ class ProcessingStore:
             run_id = int(cur.lastrowid)
 
             self.conn.executemany(
+                """INSERT INTO resolved_participant(
+                       processing_run_id, id, canonical_name, is_self, method, confidence
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (run_id, p.id, p.canonical_name, int(p.is_self), p.method, p.confidence)
+                    for p in result.resolved_participants
+                ],
+            )
+            self.conn.executemany(
+                """INSERT INTO resolved_participant_member(
+                       processing_run_id, resolved_participant_id, participant_id,
+                       method, confidence
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (run_id, p.id, participant_id, p.method, p.confidence)
+                    for p in result.resolved_participants
+                    for participant_id in p.member_participant_ids
+                ],
+            )
+
+            # Preparing an INSERT that references participant_identity can fail on
+            # deliberately minimal legacy fixtures where that A2 table is absent.
+            # Real A2 v5 always provides it. If there are no aliases, do not prepare
+            # the statement; if aliases exist without the parent table, SQLite fails
+            # closed as required.
+            if result.participant_aliases:
+                self.conn.executemany(
+                    """INSERT INTO participant_alias(
+                           processing_run_id, resolved_participant_id, participant_id,
+                           participant_identity_id, identity_type, normalized_value,
+                           original_value, method, confidence
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id,
+                            a.resolved_participant_id,
+                            a.participant_id,
+                            a.participant_identity_id,
+                            a.identity_type,
+                            a.normalized_value,
+                            a.original_value,
+                            a.method,
+                            a.confidence,
+                        )
+                        for a in result.participant_aliases
+                    ],
+                )
+
+            self.conn.executemany(
+                """INSERT INTO participant_resolution_candidate(
+                       processing_run_id, participant_id_a, participant_id_b,
+                       reason, confidence, method
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        run_id,
+                        c.left_participant_id,
+                        c.right_participant_id,
+                        c.reason,
+                        c.confidence,
+                        c.method,
+                    )
+                    for c in result.participant_resolution_candidates
+                ],
+            )
+
+            self.conn.executemany(
                 """INSERT INTO sender_run(
                        processing_run_id, id, conversation_id, sender_id,
                        first_membership_id, last_membership_id,
@@ -160,6 +246,17 @@ class ProcessingStore:
                     for r in result.sender_runs
                 ],
             )
+            self.conn.executemany(
+                """INSERT INTO sender_run_resolved_participant(
+                       processing_run_id, sender_run_id, resolved_participant_id
+                   ) VALUES (?, ?, ?)""",
+                [
+                    (run_id, r.id, r.resolved_participant_id)
+                    for r in result.sender_runs
+                    if r.resolved_participant_id is not None
+                ],
+            )
+
             self.conn.executemany(
                 """INSERT INTO conversation_session(
                        processing_run_id, id, conversation_id,
@@ -309,6 +406,17 @@ class ProcessingStore:
                 ],
             )
             self.conn.executemany(
+                """INSERT INTO processed_message_resolved_sender(
+                       processing_run_id, membership_id, resolved_participant_id
+                   ) VALUES (?, ?, ?)""",
+                [
+                    (run_id, m.membership_id, m.resolved_sender_id)
+                    for m in result.messages
+                    if m.resolved_sender_id is not None
+                ],
+            )
+
+            self.conn.executemany(
                 """INSERT INTO a3_duplicate_candidate(
                        message_id_a, message_id_b, classification,
                        confidence, method, processing_run_id
@@ -328,6 +436,6 @@ class ProcessingStore:
         return run_id
 
     def replace_all(self, result: ProcessingResult, config: ProcessingConfig) -> int:
-        """Compatibility alias; A3 v4 no longer deletes earlier runs."""
+        """Compatibility alias; current A3 never deletes completed history."""
 
         return self.persist(result, config)

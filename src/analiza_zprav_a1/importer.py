@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from .apple_event_metadata import project_apple_event_metadata
 from .attachments import resolve_attachments
 from .hashing import sha256_file, stable_message_key
 from .models import MessageRecord
@@ -17,7 +18,7 @@ from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.4.0"
+IMESSAGE_PARSER_VERSION = "0.6.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
@@ -114,6 +115,8 @@ def _write_records(
     ):
         for record in records:
             seen += 1
+            if source_type == "imessage_chat_db":
+                record.metadata.update(project_apple_event_metadata(record.raw_payload))
             attachments += len(record.attachments)
             just_resolved, just_missing = resolve_attachments(record.attachments, attachments_root)
             resolved += just_resolved

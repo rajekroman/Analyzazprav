@@ -28,19 +28,30 @@ def ordered_by_conversation(messages: list[CanonicalMessage]) -> dict[int, list[
 
 def build_sender_runs(
     grouped: dict[int, list[CanonicalMessage]],
+    *,
+    resolved_sender_map: dict[int, int] | None = None,
 ) -> tuple[tuple[SenderRun, ...], dict[int, int]]:
     runs: list[SenderRun] = []
     membership_to_run: dict[int, int] = {}
+    resolved_sender_map = resolved_sender_map or {}
+
+    def sender_key(message: CanonicalMessage) -> int | None:
+        if message.sender_id is None:
+            return None
+        return resolved_sender_map.get(message.sender_id, message.sender_id)
+
     next_id = 1
     for conversation_id in sorted(grouped):
         messages = grouped[conversation_id]
         start = 0
         while start < len(messages):
-            sender_id = messages[start].sender_id
+            resolved_sender_id = sender_key(messages[start])
             end = start + 1
-            while end < len(messages) and messages[end].sender_id == sender_id:
+            while end < len(messages) and sender_key(messages[end]) == resolved_sender_id:
                 end += 1
             chunk = messages[start:end]
+            raw_sender_ids = {message.sender_id for message in chunk}
+            sender_id = next(iter(raw_sender_ids)) if len(raw_sender_ids) == 1 else None
             run = SenderRun(
                 id=next_id,
                 conversation_id=conversation_id,
@@ -53,6 +64,7 @@ def build_sender_runs(
                 end_us=chunk[-1].timestamp_us,
                 message_count=len(chunk),
                 char_count=sum(len(clean_text(m.text) or "") for m in chunk),
+                resolved_participant_id=resolved_sender_id,
             )
             runs.append(run)
             for message in chunk:
@@ -113,13 +125,6 @@ def build_explicit_threads(
     session_map: dict[int, int],
     reply_relation_types: frozenset[str],
 ) -> tuple[tuple[Thread, ...], dict[int, int]]:
-    """Resolve message-level A2 replies into conversation-scoped membership threads.
-
-    A canonical message can belong to multiple conversations. An explicit A2
-    relation is therefore projected only into conversations shared by both
-    endpoint messages; it is never allowed to connect memberships across chats.
-    """
-
     by_membership = {message.membership_id: message for message in messages}
     memberships_by_message: dict[int, list[CanonicalMessage]] = {}
     for message in messages:
@@ -158,7 +163,6 @@ def build_explicit_threads(
             stack.extend(sorted(adjacency.get(current, ()), reverse=True))
         if len(component) < 2:
             continue
-
         ordered_memberships = tuple(
             sorted(component, key=lambda membership_id: canonical_sort_key(by_membership[membership_id]))
         )
