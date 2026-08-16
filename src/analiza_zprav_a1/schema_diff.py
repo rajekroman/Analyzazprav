@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+from .sqlite_schema import schema_signature
 
 SCHEMA_DIFF_VERSION = "1"
 SUPPORTED_SCHEMA_INVENTORY_VERSIONS = {"1"}
@@ -24,6 +26,14 @@ def load_schema_inventory(path: Path) -> dict[str, Any]:
     signature = value.get("signature_sha256")
     if not isinstance(signature, str) or not signature:
         raise ValueError("Schema inventory requires signature_sha256")
+
+    signed_payload = {key: item for key, item in value.items() if key != "signature_sha256"}
+    actual_signature = schema_signature(signed_payload)
+    if actual_signature != signature:
+        raise ValueError(
+            "Schema inventory signature_sha256 does not match its canonical payload"
+        )
+
     tables = value.get("tables")
     if not isinstance(tables, list):
         raise ValueError("Schema inventory tables must be an array")
