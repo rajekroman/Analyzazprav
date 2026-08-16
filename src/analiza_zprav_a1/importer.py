@@ -9,6 +9,7 @@ from .apple_event_metadata import project_apple_event_metadata
 from .attachments import resolve_attachments
 from .csv_mapping import CSVMappingProfile
 from .hashing import sha256_file, stable_message_key
+from .imessage_preflight import validate_imessage_snapshot
 from .models import MessageRecord
 from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
@@ -289,10 +290,11 @@ def import_imessage(
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
 
-    # One immutable logical snapshot is the source of truth for content hash,
-    # parsing, schema inventory and reconciliation. This prevents WAL-visible
-    # state from being described by metadata from a different database state.
+    # One immutable logical snapshot is the source of truth for validation,
+    # content hash, parsing, schema inventory and reconciliation. Preflight is
+    # deliberately completed before _write_records creates staging artifacts.
     with consistent_sqlite_snapshot(chat_db) as snapshot:
+        validate_imessage_snapshot(snapshot)
         snapshot_hash = sha256_file(snapshot)
         schema_inventory = inventory_sqlite_schema(snapshot)
         return _write_records(
