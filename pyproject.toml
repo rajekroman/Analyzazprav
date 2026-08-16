@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "analyza-zprav"
+version = "0.2.0"
+description = "Local-first message archive normalization and analysis foundation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+analyza-zprav = "analyza_zprav.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
