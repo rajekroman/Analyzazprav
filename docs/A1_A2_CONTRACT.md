@@ -7,7 +7,7 @@ A1 is the source-extraction layer. A2 is the authoritative normalization and SQL
 The critical path is:
 
 ```text
-immutable source → A1 staging → A2 canonical SQLite
+source → immutable A1 snapshot → staging → A2 canonical SQLite
 ```
 
 A1 never writes canonical tables. A2 never silently repairs or discards an A1 source occurrence.
@@ -51,6 +51,38 @@ For iMessage the manifest also documents:
 }
 ```
 
+## SQLite source snapshot and WAL consistency
+
+A live macOS Messages database may consist logically of `chat.db` plus committed state in SQLite WAL. Hashing only the main `chat.db` file while SQLite reads a newer logical state from `chat.db-wal` would make provenance inconsistent with the data actually parsed.
+
+For the iMessage importer A1 therefore:
+
+1. opens the original database read-only;
+2. creates a temporary consistent database using SQLite's online backup API;
+3. parses that immutable backup snapshot;
+4. computes `manifest.source.sha256` from that same backup snapshot;
+5. deletes the temporary snapshot after staging output has been written.
+
+The manifest identifies this explicitly:
+
+```json
+{
+  "source": {
+    "type": "imessage_chat_db",
+    "name": "chat.db",
+    "sha256": "...",
+    "snapshot_method": "sqlite_online_backup_v1",
+    "snapshot_includes_committed_wal": true
+  }
+}
+```
+
+For iMessage, `source.sha256` is therefore the SHA-256 of the **immutable logical SQLite snapshot actually parsed by A1**, not a hash of the main `chat.db` file in isolation. This is the A1/A2 source-snapshot identity used for reconciliation and idempotency.
+
+A1 does not checkpoint, rewrite or mutate the original database. The regression suite keeps an active WAL open, verifies a committed WAL-only message is included in staging, and verifies that both the main database bytes and WAL bytes remain unchanged by import.
+
+For non-SQLite static exports such as CSV/JSON/TXT, `source.sha256` remains the byte-level SHA-256 of the input file.
+
 ## One physical source message = one A1 record
 
 For Apple `chat.db`, A1 iterates the `message` table directly. `chat_message_join` is **not** joined into the main message SELECT.
@@ -62,7 +94,7 @@ Therefore:
 - attachment metadata is emitted once per physical source message;
 - `source_record_key` does not depend on chat membership.
 
-For iMessage v2 record identity is derived from immutable source SHA-256 + source table marker + `message.ROWID`.
+For iMessage v2 record identity is derived from logical source-snapshot SHA-256 + source table marker + `message.ROWID`.
 
 ## Source conversation relations
 
@@ -96,17 +128,17 @@ Rules:
 
 A2 stores two distinct concepts:
 
-- `source_sha256` — byte-level identity of the immutable A1 source snapshot;
+- `source_sha256` — identity of the immutable source snapshot actually consumed by A1; for live SQLite this is the logical online-backup snapshot hash, for static files it is the input-file hash;
 - `source_fingerprint` — one concrete parser/contract ingest representation.
 
-The same unchanged source parsed by a newer parser therefore has:
+The same unchanged logical source parsed by a newer parser therefore has:
 
 - the same `source_sha256`;
 - a different parser-aware `source_fingerprint`;
 - a new auditable import run;
 - additional provenance rows without unnecessary canonical duplication.
 
-A7 should reconcile a concrete A1 staging run using source type, source SHA-256, parser version/contract and source record keys. The parser-aware ingest fingerprint is not a replacement for the raw source hash.
+A7 should reconcile a concrete A1 staging run using source type, source snapshot SHA-256, parser version/contract and source record keys. The parser-aware ingest fingerprint is not a replacement for the source-snapshot hash.
 
 ## Canonical message↔conversation cardinality
 
@@ -222,7 +254,7 @@ A2 uses append-only migrations:
 
 1. `001_initial.sql` — initial canonical entities;
 2. `002_a1_staging_contract.sql` — A1 provenance contract;
-3. `003_source_content_hash.sql` — raw source SHA-256;
+3. `003_source_content_hash.sql` — source-snapshot SHA-256 identity;
 4. `004_explicit_local_time.sql` — explicit source-local time fields;
 5. `005_lossless_membership.sql` — source-snapshot-safe conversation identity, M:N memberships, source relation provenance and attachment occurrences.
 
@@ -241,15 +273,27 @@ A3+ should use the stable A2 views rather than source-specific schemas:
 
 The same canonical message may therefore appear in multiple `analysis_messages` rows when source evidence places it in multiple conversations. A3/A4/A6 must use membership identity, not only canonical message ID.
 
-## End-to-end regression gate
+## End-to-end regression gates
 
-The repository includes a synthetic integration test that executes:
+The repository contains two critical iMessage integration regressions:
+
+1. one physical source message belongs to two chats:
 
 ```text
 Apple chat.db
   → A1 iMessage staging
   → A2 schema v5 ingest
-  → SQLite integrity/provenance checks
+  → 1 message / 2 memberships / 2 source relations
 ```
 
-The fixture deliberately places one physical source message into two chats. Passing requires one source/canonical message and two preserved memberships/relations, with the A1 `source_record_key` surviving unchanged into A2 provenance.
+2. a committed message exists in active WAL state:
+
+```text
+live chat.db + chat.db-wal
+  → read-only SQLite online backup snapshot
+  → hash + parse same immutable snapshot
+  → WAL message present in staging
+  → original chat.db and WAL bytes unchanged
+```
+
+The first gate proves relational losslessness. The second proves that A1 provenance describes the same logical SQLite state that was actually parsed.
