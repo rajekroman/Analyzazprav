@@ -3,17 +3,20 @@ name: A4 tests
 on:
   push:
     branches:
-      - agent/a4-analytics-main
+      - agent/a0-a4-integration
   pull_request:
     paths:
       - 'database/a4_schema*.sql'
       - 'src/analyzazprav/analytics/**'
-      - 'tests/test_a4*.py'
+      - 'src/analyzazprav/qa/**'
+      - 'tests/**'
       - 'docs/A4_A7_HANDOFF.md'
+      - 'docs/A7_QA.md'
+      - 'pyproject.toml'
       - '.github/workflows/a4-tests.yml'
 
 jobs:
-  pytest:
+  vertical-analytics:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,5 +25,12 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e . pytest
-      - name: Run full A1 + A2 + A3 + A4 regression suite
+      - name: Verify unified CLI entry points
+        run: |
+          az-import --help
+          az-normalize --help
+          az-process --help
+          az-analyze --help
+          az-qa --help
+      - name: Run full A1+A2+A3+A4+A7 regression suite
         run: python -m pytest -q
