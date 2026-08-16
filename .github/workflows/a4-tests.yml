@@ -1,0 +1,23 @@
+name: A4 tests
+
+on:
+  push:
+    branches:
+      - agent/a4-analytics-a3
+  pull_request:
+    paths:
+      - 'database/a4_schema.sql'
+      - 'src/analyzazprav/analytics/**'
+      - 'tests/test_a4_analytics.py'
+      - '.github/workflows/a4-tests.yml'
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run A2 + A3 + A4 unit and integration tests
+        run: python -m unittest discover -s tests -v
