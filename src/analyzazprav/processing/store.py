@@ -20,7 +20,7 @@ class ProcessingStore:
     def _default_schema_path() -> Path:
         return Path(__file__).resolve().parents[3] / "database" / "a3_schema.sql"
 
-    # These are the already-integrated A3 v4 columns.  A v4 database is a
+    # These are the already-integrated A3 v4 columns. A v4 database is a
     # supported upgrade source and must not be rebuilt merely because v5 adds
     # participant-resolution sidecars.
     _CURRENT_PROCESSED_COLUMNS = frozenset(
@@ -172,27 +172,35 @@ class ProcessingStore:
                     for participant_id in p.member_participant_ids
                 ],
             )
-            self.conn.executemany(
-                """INSERT INTO participant_alias(
-                       processing_run_id, resolved_participant_id, participant_id,
-                       participant_identity_id, identity_type, normalized_value,
-                       original_value, method, confidence
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        run_id,
-                        a.resolved_participant_id,
-                        a.participant_id,
-                        a.participant_identity_id,
-                        a.identity_type,
-                        a.normalized_value,
-                        a.original_value,
-                        a.method,
-                        a.confidence,
-                    )
-                    for a in result.participant_aliases
-                ],
-            )
+
+            # Preparing an INSERT that references participant_identity can fail on
+            # deliberately minimal legacy fixtures where that A2 table is absent.
+            # Real A2 v5 always provides it. If there are no aliases, do not prepare
+            # the statement; if aliases exist without the parent table, SQLite fails
+            # closed as required.
+            if result.participant_aliases:
+                self.conn.executemany(
+                    """INSERT INTO participant_alias(
+                           processing_run_id, resolved_participant_id, participant_id,
+                           participant_identity_id, identity_type, normalized_value,
+                           original_value, method, confidence
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id,
+                            a.resolved_participant_id,
+                            a.participant_id,
+                            a.participant_identity_id,
+                            a.identity_type,
+                            a.normalized_value,
+                            a.original_value,
+                            a.method,
+                            a.confidence,
+                        )
+                        for a in result.participant_aliases
+                    ],
+                )
+
             self.conn.executemany(
                 """INSERT INTO participant_resolution_candidate(
                        processing_run_id, participant_id_a, participant_id_b,
