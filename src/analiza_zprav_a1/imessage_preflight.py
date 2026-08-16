@@ -85,9 +85,13 @@ def validate_imessage_snapshot(path: Path) -> dict[str, Any]:
             if missing:
                 issues.append(f"{table} missing parser columns: {', '.join(missing)}")
 
-        # Reconciliation already uses exact ROWID identity for these relation
-        # tables. Reject WITHOUT ROWID variants before staging files exist.
-        for table in ("chat_message_join", "message_attachment_join"):
+        # Exact source-relation provenance uses ROWID for all relation tables.
+        # Reject WITHOUT ROWID variants before staging files are created.
+        for table in (
+            "chat_message_join",
+            "chat_handle_join",
+            "message_attachment_join",
+        ):
             if table in tables:
                 _requires_rowid(conn, table, issues)
 
