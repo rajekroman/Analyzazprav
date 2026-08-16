@@ -52,10 +52,12 @@ def _json_ids(value: object, *, field: str) -> tuple[int, ...]:
 
 @dataclass(frozen=True)
 class A4SQLiteCandidateSource:
-    """Read-only adapter over A4's published analysis_a4_* views.
+    """Read-only adapter over A4's published, reconciled analysis views.
 
-    The source does not reinterpret A4 findings. It translates deterministic A4
-    rows into A5 AnalysisCandidate objects while preserving source_message_ids.
+    A5 is interpretive and therefore may only consume deterministic A4 findings
+    whose current conversation row passes A4's published reconciliation gate.
+    The adapter never repairs or reinterprets A4 rows; malformed provenance is a
+    hard error before any candidate can reach an AI provider.
     """
 
     database_path: Path
@@ -72,6 +74,7 @@ class A4SQLiteCandidateSource:
         except sqlite3.Error as exc:
             raise A4SQLiteSourceError(f"Cannot open A4 database read-only: {exc}") from exc
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
         return conn
 
     @staticmethod
@@ -81,8 +84,59 @@ class A4SQLiteCandidateSource:
         ).fetchone()
         return row is not None
 
+    def _assert_reconciled(self, conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row:
+        if not self._view_exists(conn, "analysis_a4_reconciliation"):
+            raise A4SQLiteSourceError(
+                "A4 database is missing required analysis_a4_reconciliation; "
+                "A5 refuses deterministic findings without a current QA/provenance gate"
+            )
+        try:
+            rows = conn.execute(
+                """SELECT * FROM analysis_a4_reconciliation
+                   WHERE CAST(conversation_id AS TEXT)=?""",
+                (str(conversation_id),),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise A4SQLiteSourceError(f"Cannot read analysis_a4_reconciliation: {exc}") from exc
+        if len(rows) != 1:
+            raise A4SQLiteSourceError(
+                f"Expected exactly one A4 reconciliation row for conversation {conversation_id}; "
+                f"found {len(rows)}"
+            )
+        row = rows[0]
+        required_zero = (
+            "membership_count_delta",
+            "invalid_response_session_count",
+            "invalid_silence_session_count",
+            "invalid_event_session_count",
+        )
+        for field in required_zero:
+            if field not in row.keys() or int(row[field]) != 0:
+                raise A4SQLiteSourceError(
+                    f"A4 reconciliation failed for conversation {conversation_id}: {field}={row[field] if field in row.keys() else 'missing'}"
+                )
+        if "uses_latest_processing_run" not in row.keys() or int(row["uses_latest_processing_run"]) != 1:
+            raise A4SQLiteSourceError(
+                f"A4 reconciliation failed for conversation {conversation_id}: stale A3 processing run"
+            )
+        if "reconciliation_ok" not in row.keys() or int(row["reconciliation_ok"]) != 1:
+            raise A4SQLiteSourceError(
+                f"A4 reconciliation failed for conversation {conversation_id}: reconciliation_ok != 1"
+            )
+        if (
+            "a4_source_membership_count" in row.keys()
+            and "sender_accounted_membership_count" in row.keys()
+            and int(row["a4_source_membership_count"])
+            != int(row["sender_accounted_membership_count"])
+        ):
+            raise A4SQLiteSourceError(
+                f"A4 reconciliation failed for conversation {conversation_id}: sender accounting mismatch"
+            )
+        return row
+
     def _rows(self, view: str, conversation_id: str) -> list[sqlite3.Row]:
         with self._connect() as conn:
+            self._assert_reconciled(conn, conversation_id)
             if not self._view_exists(conn, view):
                 return []
             try:
@@ -158,28 +212,80 @@ class A4SQLiteCandidateSource:
             )))
         return tuple(result)
 
+    def _topic_evidence_ids(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        conversation_id: int,
+        analytics_run_id: int,
+        topic_key: str,
+    ) -> tuple[int, ...]:
+        if not self._view_exists(conn, "analysis_a4_topic_evidence"):
+            raise A4SQLiteSourceError(
+                "A4 publishes topic candidates but analysis_a4_topic_evidence is missing"
+            )
+        try:
+            rows = conn.execute(
+                """SELECT message_id
+                   FROM analysis_a4_topic_evidence
+                   WHERE conversation_id=? AND analytics_run_id=? AND topic_key=?
+                   ORDER BY message_id""",
+                (conversation_id, analytics_run_id, topic_key),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise A4SQLiteSourceError(f"Cannot read analysis_a4_topic_evidence: {exc}") from exc
+        return tuple(int(row[0]) for row in rows)
+
     def topics(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
         result: list[AnalysisCandidate] = []
-        for row in self._rows("analysis_a4_topics", conversation_id):
-            # Undated topics remain valid A4 evidence but cannot define a bounded
-            # A5 period; keep them outside automatic A5 candidate selection.
-            if row["first_period_date"] is None or row["last_period_date"] is None:
-                continue
-            result.append(candidate_from_a4_topic(SimpleNamespace(
-                conversation_id=int(row["conversation_id"]),
-                topic_key=str(row["topic_key"]),
-                method=str(row["method"]),
-                normalized_phrase=str(row["normalized_phrase"]),
-                ngram_size=int(row["ngram_size"]),
-                document_frequency=int(row["document_frequency"]),
-                document_frequency_ratio=float(row["document_frequency_ratio"]),
-                occurrence_count=int(row["occurrence_count"]),
-                participant_count=int(row["participant_count"]),
-                salience=float(row["salience"]),
-                first_period_date=str(row["first_period_date"]),
-                last_period_date=str(row["last_period_date"]),
-                source_message_ids=_json_ids(row["source_message_ids_json"], field="analysis_a4_topics.source_message_ids_json"),
-            )))
+        with self._connect() as conn:
+            self._assert_reconciled(conn, conversation_id)
+            if not self._view_exists(conn, "analysis_a4_topics"):
+                return ()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM analysis_a4_topics WHERE CAST(conversation_id AS TEXT)=?",
+                    (str(conversation_id),),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                raise A4SQLiteSourceError(f"Cannot read analysis_a4_topics: {exc}") from exc
+
+            for row in rows:
+                # Undated topics remain valid A4 lexical evidence but cannot define
+                # a bounded A5 period; do not convert them into an automatic candidate.
+                if row["first_period_date"] is None or row["last_period_date"] is None:
+                    continue
+                source_ids = _json_ids(
+                    row["source_message_ids_json"],
+                    field="analysis_a4_topics.source_message_ids_json",
+                )
+                evidence_ids = self._topic_evidence_ids(
+                    conn,
+                    conversation_id=int(row["conversation_id"]),
+                    analytics_run_id=int(row["analytics_run_id"]),
+                    topic_key=str(row["topic_key"]),
+                )
+                if tuple(sorted(source_ids)) != evidence_ids:
+                    raise A4SQLiteSourceError(
+                        "A4 lexical topic evidence mismatch for "
+                        f"conversation={row['conversation_id']}, topic_key={row['topic_key']}: "
+                        f"candidate={tuple(sorted(source_ids))}, evidence={evidence_ids}"
+                    )
+                result.append(candidate_from_a4_topic(SimpleNamespace(
+                    conversation_id=int(row["conversation_id"]),
+                    topic_key=str(row["topic_key"]),
+                    method=str(row["method"]),
+                    normalized_phrase=str(row["normalized_phrase"]),
+                    ngram_size=int(row["ngram_size"]),
+                    document_frequency=int(row["document_frequency"]),
+                    document_frequency_ratio=float(row["document_frequency_ratio"]),
+                    occurrence_count=int(row["occurrence_count"]),
+                    participant_count=int(row["participant_count"]),
+                    salience=float(row["salience"]),
+                    first_period_date=str(row["first_period_date"]),
+                    last_period_date=str(row["last_period_date"]),
+                    source_message_ids=source_ids,
+                )))
         return tuple(result)
 
     def candidates(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
