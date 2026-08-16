@@ -63,6 +63,32 @@ The validator opens SQLite read-only and checks:
 - analytical view counts reconcile to canonical tables/mappings
 - non-empty WAL presence is surfaced for reproducibility
 
+## Exact A1 → A2 reconciliation
+
+A source-level identity must survive normalization. A2's independently computed
+`source_hash` is useful for A2 idempotency but is not a substitute for the A1
+`source_record_key`.
+
+The A1→A2 bridge contract therefore requires A2 `message_source` to preserve the
+upstream `source_record_key` verbatim and to bind `import_run.source_fingerprint`
+to A1 `manifest.source.sha256`.
+
+Run the exact reconciliation with:
+
+```bash
+python -m qa.reconcile_a1_a2 path/to/staging path/to/messages.sqlite
+python -m qa.reconcile_a1_a2 path/to/staging path/to/messages.sqlite --report a7-reconcile.json
+```
+
+The reconciler refuses fuzzy matching. It checks exact set equality of A1 and
+A2 message source keys for the matching import run and reconciles attachment
+source IDs as a multiset. Multiple A2 `message_source` rows may legitimately
+map to one canonical `message` after GUID-based deduplication; no source row may
+disappear.
+
+Until A2 exposes/persists `message_source.source_record_key`, this NORMALIZATION
+gate intentionally fails with `A2_SOURCE_RECORD_KEY_COLUMN_MISSING`.
+
 ## Result severity
 
 - `PASS`: no errors or warnings.
@@ -86,9 +112,9 @@ SQLite reports emit `database_sha256` and, when present, `wal_sha256`.
 ## Golden dataset policy
 
 `qa/fixtures/golden` mirrors the current A1 staging shape and must pass.
-`qa/fixtures/corrupt` is intentionally invalid and must fail. A2 is tested with
-a minimal SQLite fixture matching the required canonical object names and
-provenance relationships.
+`qa/fixtures/corrupt` is intentionally invalid and must fail. SQLite and
+A1→A2 reconciliation tests create minimal temporary databases and cover both
+valid mappings and deliberate provenance failures.
 
 Run all A7 regression tests with:
 
@@ -104,5 +130,6 @@ derived-only identifiers. A5 must receive evidence message IDs with any
 interpretation. A6 must keep those IDs available when displaying metrics,
 selected messages, and AI analysis.
 
-Future A7 slices will add end-to-end A1→A2 reconciliation, exact analytical
-metric checks, and AI/UI evidence-chain tests against integrated branches.
+Future A7 slices will add canonical timestamp/text mapping checks after the
+A1→A2 bridge lands, exact analytical metric checks, and A5/A6 evidence-chain
+tests against integrated branches.
