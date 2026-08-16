@@ -57,6 +57,8 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
 
     assert stats.messages_seen == 1
     assert stats.attachments_seen == 1
+    assert stats.attachments_resolved == 0
+    assert stats.attachments_missing == 1
     assert stats.errors == 0
 
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
@@ -79,6 +81,7 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     assert record["timestamp_precision"] == "nanosecond"
     assert len(record["attachments"]) == 1
     assert record["attachments"][0]["source_attachment_id"] == "22"
+    assert record["attachments"][0]["resolution_status"] == "missing"
     assert record["source_record_key"]
     assert record["raw_payload"]["guid"] == "GUID-10"
 
