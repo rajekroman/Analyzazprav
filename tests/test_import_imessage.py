@@ -84,7 +84,7 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     assert manifest["source"]["snapshot_includes_committed_wal"] is True
     assert manifest["counts"]["messages_seen"] == 1
     assert manifest["counts"]["messages_emitted"] == 1
-    assert manifest["parser"]["version"] == "0.9.0"
+    assert manifest["parser"]["version"] == "0.10.0"
     assert manifest["source_record_key"]["version"] == "2"
     assert manifest["source_record_key"]["scope"] == "source_snapshot+message_rowid"
 

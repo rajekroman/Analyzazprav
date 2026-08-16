@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .attachment_reconciliation import ATTACHMENT_RELATION_PAYLOAD_KEY
+
 PREFLIGHT_VERSION = "1"
 
 
@@ -31,6 +33,14 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def _missing(actual: set[str], required: set[str]) -> list[str]:
     return sorted(required - actual)
+
+
+def _requires_rowid(conn: sqlite3.Connection, table: str, issues: list[str]) -> None:
+    escaped = table.replace('"', '""')
+    try:
+        conn.execute(f'SELECT ROWID FROM "{escaped}" LIMIT 0')
+    except sqlite3.OperationalError:
+        issues.append(f"{table} must provide SQLite ROWID provenance")
 
 
 def validate_imessage_snapshot(path: Path) -> dict[str, Any]:
@@ -75,6 +85,12 @@ def validate_imessage_snapshot(path: Path) -> dict[str, Any]:
             if missing:
                 issues.append(f"{table} missing parser columns: {', '.join(missing)}")
 
+        # Reconciliation already uses exact ROWID identity for these relation
+        # tables. Reject WITHOUT ROWID variants before staging files exist.
+        for table in ("chat_message_join", "message_attachment_join"):
+            if table in tables:
+                _requires_rowid(conn, table, issues)
+
         message_columns = table_columns["message"]
         handle_is_used = "handle_id" in message_columns or "chat_handle_join" in tables
         if handle_is_used and "handle" in tables:
@@ -83,6 +99,16 @@ def validate_imessage_snapshot(path: Path) -> dict[str, Any]:
                 issues.append(f"handle missing parser columns: {', '.join(missing)}")
         if "chat_handle_join" in tables and "handle" not in tables:
             issues.append("chat_handle_join is present but required table 'handle' is missing")
+
+        if (
+            "message_attachment_join" in tables
+            and "attachment" in tables
+            and ATTACHMENT_RELATION_PAYLOAD_KEY in table_columns["attachment"]
+        ):
+            issues.append(
+                "attachment table uses reserved A1 provenance column name: "
+                f"{ATTACHMENT_RELATION_PAYLOAD_KEY}"
+            )
 
         if issues:
             raise ValueError("Unsupported Apple Messages schema: " + "; ".join(issues))

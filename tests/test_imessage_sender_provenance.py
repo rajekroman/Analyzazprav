@@ -56,7 +56,7 @@ def test_sender_handle_resolution_states_are_explicit_and_survive_a2(tmp_path: P
     assert stats.reconciliation_ok is True
 
     manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["parser"]["version"] == "0.9.0"
+    assert manifest["parser"]["version"] == "0.10.0"
     records = _records(staging)
 
     assert records["10"]["sender_handle"] == "alice@example.com"
