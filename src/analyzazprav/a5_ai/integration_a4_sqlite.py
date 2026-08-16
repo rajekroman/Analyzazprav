@@ -96,7 +96,10 @@ class A4SQLiteCandidateSource:
     def conflicts(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
         result: list[AnalysisCandidate] = []
         for row in self._rows("analysis_a4_events", conversation_id):
-            if str(row["event_type"]) != "conflict":
+            # A4's production persisted event type is `conflict_candidate`.
+            # Accept the historical draft label too so older derived databases
+            # remain readable without changing the canonical A4 meaning.
+            if str(row["event_type"]) not in {"conflict_candidate", "conflict"}:
                 continue
             result.append(candidate_from_a4_conflict(SimpleNamespace(
                 conversation_id=int(row["conversation_id"]),
