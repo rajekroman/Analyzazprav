@@ -8,6 +8,7 @@ from .downstream import (
     validate_a6_contract,
     validate_a6_renderer_source,
 )
+from .participant_resolution import validate_participant_resolution
 from .reconciliation import validate_staging_bundle
 from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING, validate_staging_dir
 from .vertical import canonical_fingerprint, validate_vertical_pipeline
@@ -22,6 +23,7 @@ __all__ = [
     "validate_staging_dir",
     "validate_staging_bundle",
     "validate_vertical_pipeline",
+    "validate_participant_resolution",
     "canonical_fingerprint",
     "validate_a4_result",
     "validate_a5_result",
