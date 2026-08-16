@@ -4,7 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from .staging import STATUS_FAIL, validate_staging_dir
+from .reconciliation import validate_staging_bundle
+from .staging import STATUS_FAIL
 from .vertical import validate_vertical_pipeline
 
 
@@ -20,19 +21,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    staging_parser = sub.add_parser("staging", help="Validate an A1 staging bundle read-only.")
+    staging_parser = sub.add_parser(
+        "staging",
+        help="Validate an A1 staging bundle and its source reconciliation read-only.",
+    )
     staging_parser.add_argument("--staging", type=Path, required=True)
 
     vertical_parser = sub.add_parser(
         "vertical",
-        help="Reconcile A1 staging against A2 canonical data and the latest A3 run.",
+        help="Reconcile validated A1 staging against A2 canonical data and the latest A3 run.",
     )
     vertical_parser.add_argument("--staging", type=Path, required=True)
     vertical_parser.add_argument("--database", type=Path, required=True)
 
     args = parser.parse_args(argv)
     if args.command == "staging":
-        return _emit(validate_staging_dir(args.staging))
+        return _emit(validate_staging_bundle(args.staging))
     if args.command == "vertical":
         return _emit(validate_vertical_pipeline(args.staging, args.database))
     parser.error(f"unsupported command: {args.command}")
