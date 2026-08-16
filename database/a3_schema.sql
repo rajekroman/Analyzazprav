@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS processed_message (
     FOREIGN KEY(processing_run_id, session_id)
         REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE,
     FOREIGN KEY(processing_run_id, thread_id)
-        REFERENCES conversation_thread(processing_run_id, id) ON DELETE SET NULL
+        REFERENCES conversation_thread(processing_run_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
