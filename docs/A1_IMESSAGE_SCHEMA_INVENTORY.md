@@ -122,3 +122,7 @@ Před integrací musí testy prokázat:
 6. schema tampering způsobí reconciliation failure;
 7. legacy bundle bez schema declaration zůstává reconcilovatelný;
 8. A1/A2/A3/A7 vertical regression zůstane zelený.
+
+## Exact-head validation
+
+A1 slice head `8486f0342be2025cf04a9d37cf19919174d2fd0a` prošel A1 a A3 workflow. Následný composed integration commit `d64830229f92a50ef4f4a7e671f88ad1507fea88`, který skládá tento A1 head s autoritativní A7 vrstvou, prošel A1, A2, A3, A7 diagnostic i A7 full vertical gate. Kompletní composed suite: **83 passed**.
