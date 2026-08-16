@@ -9,6 +9,7 @@ on:
       - 'database/a4_schema*.sql'
       - 'src/analyzazprav/analytics/**'
       - 'tests/test_a4*.py'
+      - 'docs/A4_A7_HANDOFF.md'
       - '.github/workflows/a4-tests.yml'
 
 jobs:
