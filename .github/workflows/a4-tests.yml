@@ -3,12 +3,12 @@ name: A4 tests
 on:
   push:
     branches:
-      - agent/a4-analytics-a3
+      - agent/a4-analytics-main
   pull_request:
     paths:
-      - 'database/a4_schema.sql'
+      - 'database/a4_schema*.sql'
       - 'src/analyzazprav/analytics/**'
-      - 'tests/test_a4_analytics.py'
+      - 'tests/test_a4*.py'
       - '.github/workflows/a4-tests.yml'
 
 jobs:
@@ -19,5 +19,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run A2 + A3 + A4 unit and integration tests
+      - name: Run full A1 + A2 + A3 + A4 regression suite
         run: python -m unittest discover -s tests -v
