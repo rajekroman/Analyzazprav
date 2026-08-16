@@ -25,11 +25,13 @@ GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
 @dataclass(slots=True)
 class ImportStats:
     messages_seen: int
+    messages_emitted: int
     attachments_seen: int
     attachments_resolved: int
     attachments_missing: int
     errors: int
     output_jsonl: str
+    errors_jsonl: str
     manifest: str
     source_sha256: str
 
@@ -47,10 +49,14 @@ def _write_records(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_jsonl = output_dir / "messages.jsonl"
     manifest_path = output_dir / "manifest.json"
+    errors_jsonl = output_dir / "errors.jsonl"
     source_hash = sha256_file(source_path)
 
-    seen = attachments = resolved = missing = errors = 0
-    with output_jsonl.open("w", encoding="utf-8", newline="\n") as stream:
+    seen = emitted = attachments = resolved = missing = errors = 0
+    with (
+        output_jsonl.open("w", encoding="utf-8", newline="\n") as stream,
+        errors_jsonl.open("w", encoding="utf-8", newline="\n") as error_stream,
+    ):
         for record in records:
             seen += 1
             attachments += len(record.attachments)
@@ -75,8 +81,18 @@ def _write_records(
                 )
                 stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
                 stream.write("\n")
-            except Exception:
+                emitted += 1
+            except Exception as exc:
                 errors += 1
+                error_payload = {
+                    "source_message_id": record.source_message_id,
+                    "source_guid": record.source_guid,
+                    "conversation_source_id": record.conversation_source_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                error_stream.write(json.dumps(error_payload, ensure_ascii=False, sort_keys=True))
+                error_stream.write("\n")
 
     manifest = {
         "contract_version": A1_CONTRACT_VERSION,
@@ -89,9 +105,10 @@ def _write_records(
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
         },
-        "outputs": {"messages": output_jsonl.name},
+        "outputs": {"messages": output_jsonl.name, "errors": errors_jsonl.name},
         "counts": {
             "messages_seen": seen,
+            "messages_emitted": emitted,
             "attachments_seen": attachments,
             "attachments_resolved": resolved,
             "attachments_missing": missing,
@@ -105,11 +122,13 @@ def _write_records(
 
     return ImportStats(
         messages_seen=seen,
+        messages_emitted=emitted,
         attachments_seen=attachments,
         attachments_resolved=resolved,
         attachments_missing=missing,
         errors=errors,
         output_jsonl=str(output_jsonl),
+        errors_jsonl=str(errors_jsonl),
         manifest=str(manifest_path),
         source_sha256=source_hash,
     )
