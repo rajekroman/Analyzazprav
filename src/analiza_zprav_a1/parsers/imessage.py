@@ -68,15 +68,17 @@ class IMessageParser:
 
             if "handle_id" in mcols and "handle" in tables:
                 handle_expr = "h.id AS _sender_handle"
+                handle_rowid_expr = "h.ROWID AS _sender_handle_rowid"
                 handle_join = "LEFT JOIN handle h ON h.ROWID=m.handle_id"
             else:
                 handle_expr = "NULL AS _sender_handle"
+                handle_rowid_expr = "NULL AS _sender_handle_rowid"
                 handle_join = ""
 
             query = f"""
             SELECT m.*, m.ROWID AS _message_rowid,
                    {guid_expr}, {text_expr}, {attributed_expr}, {service_expr},
-                   {handle_expr}, {reply_expr}
+                   {handle_expr}, {handle_rowid_expr}, {reply_expr}
             FROM message m
             {handle_join}
             ORDER BY m.date, m.ROWID
@@ -116,6 +118,7 @@ class IMessageParser:
                     for key in row.keys()
                     if not key.startswith("_")
                 }
+                sender_relation = self._sender_relation(row, mcols, tables)
 
                 yield MessageRecord(
                     source_message_id=str(message_rowid),
@@ -136,8 +139,51 @@ class IMessageParser:
                     reply_to_guid=row["_reply_to_guid"],
                     attachments=self._attachments_for(conn, message_rowid),
                     raw_payload=raw_payload,
-                    metadata={},
+                    metadata={"_a1_sender_relation": sender_relation},
                 )
+
+    @staticmethod
+    def _sender_relation(
+        row: sqlite3.Row,
+        message_columns: set[str],
+        tables: set[str],
+    ) -> dict[str, Any]:
+        if "handle_id" not in message_columns:
+            return {
+                "raw_handle_id": None,
+                "resolution_status": "handle_id_column_missing",
+            }
+
+        raw_handle_id = row["handle_id"]
+        if raw_handle_id is None:
+            return {
+                "raw_handle_id": None,
+                "resolution_status": "missing_handle_id",
+            }
+        if "handle" not in tables:
+            return {
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": "handle_table_missing",
+            }
+
+        resolved_rowid = row["_sender_handle_rowid"]
+        handle_value = row["_sender_handle"]
+        if resolved_rowid is None:
+            return {
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": "missing_handle_row",
+            }
+
+        result: dict[str, Any] = {
+            "raw_handle_id": raw_handle_id,
+            "resolved_handle_rowid": int(resolved_rowid),
+            "resolution_status": (
+                "handle_value_null" if handle_value is None else "resolved"
+            ),
+        }
+        if handle_value is not None:
+            result["handle"] = str(handle_value)
+        return result
 
     def _conversation_sources_for_message(
         self,

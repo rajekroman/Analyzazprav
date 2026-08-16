@@ -85,7 +85,7 @@ def test_apple_event_metadata_is_lossless_and_survives_a2(tmp_path: Path) -> Non
     assert stats.messages_emitted == 2
 
     manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["parser"]["version"] == "0.8.0"
+    assert manifest["parser"]["version"] == "0.9.0"
 
     records = _staged_records(staging)
     edited = records["10"]

@@ -64,7 +64,7 @@ def test_dangling_chat_and_handle_relations_are_preserved_and_reconciled(tmp_pat
     assert stats.reconciliation_ok is True
 
     manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["parser"]["version"] == "0.8.0"
+    assert manifest["parser"]["version"] == "0.9.0"
 
     record = _record(staging)
     by_chat = {
