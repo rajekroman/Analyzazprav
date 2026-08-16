@@ -31,9 +31,13 @@ SELECT am.id,
        pm.utc_year,
        pm.utc_month,
        pm.utc_day,
+       pm.utc_weekday,
+       pm.utc_hour,
        pm.local_year,
        pm.local_month,
-       pm.local_day
+       pm.local_day,
+       pm.local_weekday,
+       pm.local_hour
 FROM analysis_messages AS am
 JOIN processed_message AS pm ON pm.message_id = am.id
 {where_clause}
@@ -62,7 +66,11 @@ def load_analytic_messages(
             exclamation_mark_count=int(row[10]),
             has_attachment=bool(row[11]),
             utc_date=_date_string(row[12], row[13], row[14]),
-            local_date=_date_string(row[15], row[16], row[17]),
+            utc_weekday=None if row[15] is None else int(row[15]),
+            utc_hour=None if row[16] is None else int(row[16]),
+            local_date=_date_string(row[17], row[18], row[19]),
+            local_weekday=None if row[20] is None else int(row[20]),
+            local_hour=None if row[21] is None else int(row[21]),
         )
         for row in rows
     ]
