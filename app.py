@@ -70,6 +70,42 @@ def contact_overview(frame: pd.DataFrame) -> None:
         st.dataframe(overview, use_container_width=True, hide_index=True)
 
 
+def select_conversation(frame: pd.DataFrame) -> tuple[str, pd.DataFrame]:
+    contacts = sorted(frame.contact.unique())
+    contact = st.sidebar.selectbox("Kontakt", contacts)
+    contact_scope = filter_messages(frame, contact=contact)
+    summary = (
+        contact_scope.groupby("conversation_id", dropna=False)
+        .agg(messages=("message_id", "count"), first=("timestamp", "min"), last=("timestamp", "max"))
+        .reset_index()
+    )
+    options: dict[str, str] = {}
+    for row in summary.itertuples(index=False):
+        conversation_id = str(row.conversation_id)
+        label = (
+            f"{conversation_id} · {int(row.messages)} zpráv · "
+            f"{row.first:%Y-%m-%d} → {row.last:%Y-%m-%d}"
+        )
+        options[label] = conversation_id
+    if len(options) == 1:
+        conversation_id = next(iter(options.values()))
+        st.sidebar.caption(f"Konverzace: `{conversation_id}`")
+    else:
+        chosen = st.sidebar.selectbox("Konverzace", list(options))
+        conversation_id = options[chosen]
+
+    if st.session_state.get("a6_conversation_id") != conversation_id:
+        st.session_state.a6_conversation_id = conversation_id
+        st.session_state.a6_manual_selected = []
+        st.session_state.a6_finding_selected = []
+        st.session_state.a6_selection_source = "manual"
+        st.session_state.pop("a6_last_execution", None)
+        st.session_state.pop("a6_last_analysis_selection", None)
+
+    conversation_frame = contact_scope[contact_scope.conversation_id.astype(str) == conversation_id].reset_index(drop=True)
+    return contact, conversation_frame
+
+
 def timeline(frame: pd.DataFrame, findings: pd.DataFrame) -> None:
     if frame.empty:
         st.info("Bez dat pro časovou osu.")
@@ -177,19 +213,19 @@ def render_message_evidence(frame: pd.DataFrame, provenance: pd.DataFrame) -> No
 
 def significant_periods(
     findings: pd.DataFrame,
-    contact_frame: pd.DataFrame,
+    conversation_frame: pd.DataFrame,
     period_start: pd.Timestamp,
     period_end: pd.Timestamp,
     db_path: str | None,
 ) -> None:
     relevant = filter_findings(
         findings,
-        conversation_ids=contact_frame.conversation_id.unique(),
+        conversation_ids=conversation_frame.conversation_id.unique(),
         start=period_start,
         end=period_end,
     )
     if relevant.empty:
-        st.info("Pro zvolený kontakt a období nejsou v A4 dostupné významné nálezy.")
+        st.info("Pro zvolenou konverzaci a období nejsou v A4 dostupné významné nálezy.")
         return
 
     options = {}
@@ -205,7 +241,7 @@ def significant_periods(
     except json.JSONDecodeError:
         details = {"raw_details": finding.details}
     st.json(details)
-    evidence, missing = resolve_evidence(contact_frame, finding.evidence_message_ids)
+    evidence, missing = resolve_evidence(conversation_frame, finding.evidence_message_ids)
     if missing:
         st.error("A4 evidence obsahuje message_id, které A6 v kanonických zprávách nenašlo: " + ", ".join(missing))
     if evidence.empty:
@@ -224,17 +260,17 @@ def significant_periods(
 
 def render_result_evidence(
     message_ids: list[str],
-    contact_frame: pd.DataFrame,
+    conversation_frame: pd.DataFrame,
     db_path: str | None,
 ) -> None:
-    evidence, missing = resolve_evidence(contact_frame, message_ids)
+    evidence, missing = resolve_evidence(conversation_frame, message_ids)
     if missing:
         st.error("A5 odkazuje na message_id, které nejsou v aktuálních kanonických datech: " + ", ".join(missing))
     if not evidence.empty:
         render_message_evidence(evidence, provenance_for(db_path, list(evidence.message_id.astype(str))))
 
 
-def render_a5_execution(execution: dict, contact_frame: pd.DataFrame, db_path: str | None) -> None:
+def render_a5_execution(execution: dict, conversation_frame: pd.DataFrame, db_path: str | None) -> None:
     status = str(execution.get("status") or "unknown")
     st.markdown(f"### Výsledek A5 · `{status}`")
     if execution.get("context_hash"):
@@ -257,7 +293,7 @@ def render_a5_execution(execution: dict, contact_frame: pd.DataFrame, db_path: s
                 st.caption(f"síla: {float(observation.get('strength', 0.0)):.2f}")
                 if evidence_ref.get("description"):
                     st.write(evidence_ref["description"])
-                render_result_evidence(ids, contact_frame, db_path)
+                render_result_evidence(ids, conversation_frame, db_path)
 
     interpretations = result.get("interpretations") or []
     if interpretations:
@@ -266,7 +302,7 @@ def render_a5_execution(execution: dict, contact_frame: pd.DataFrame, db_path: s
             ids = [str(value) for value in interpretation.get("evidence_message_ids") or []]
             with st.expander(f"{index}. {interpretation.get('text', '')}"):
                 st.caption(f"jistota: {float(interpretation.get('confidence', 0.0)):.2f}")
-                render_result_evidence(ids, contact_frame, db_path)
+                render_result_evidence(ids, conversation_frame, db_path)
 
     patterns = result.get("patterns") or []
     if patterns:
@@ -276,7 +312,7 @@ def render_a5_execution(execution: dict, contact_frame: pd.DataFrame, db_path: s
             title = f"{index}. {pattern.get('pattern_type', 'pattern')} · {pattern.get('description', '')}"
             with st.expander(title):
                 st.caption(f"jistota: {float(pattern.get('confidence', 0.0)):.2f}")
-                render_result_evidence(ids, contact_frame, db_path)
+                render_result_evidence(ids, conversation_frame, db_path)
 
     alternatives = result.get("alternative_explanations") or []
     if alternatives:
@@ -301,29 +337,27 @@ def main():
     st.caption(f"Zdroj: {info.label}{suffix} · {len(frame):,} zpráv")
     contact_overview(frame)
 
-    contacts = sorted(frame.contact.unique())
-    contact = st.sidebar.selectbox("Kontakt / konverzace", contacts)
-    contact_frame = filter_messages(frame, contact=contact)
-    lo, hi = contact_frame.timestamp.min().date(), contact_frame.timestamp.max().date()
+    contact, conversation_frame = select_conversation(frame)
+    lo, hi = conversation_frame.timestamp.min().date(), conversation_frame.timestamp.max().date()
     dates = st.sidebar.date_input("Období", (lo, hi), min_value=lo, max_value=hi)
     if not isinstance(dates, tuple) or len(dates) != 2:
         dates = (dates, dates)
-    senders = sorted(contact_frame.sender.unique())
+    senders = sorted(conversation_frame.sender.unique())
     selected_senders = st.sidebar.multiselect("Odesílatelé", senders, default=senders)
     query = st.sidebar.text_input("Hledat v textu").strip()
 
     period_start = pd.Timestamp(dates[0])
     period_end = pd.Timestamp(dates[1]) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     filtered = filter_messages(
-        contact_frame,
+        conversation_frame,
         start=period_start,
         end=period_end,
         senders=selected_senders,
         search=query or None,
     )
-    contact_findings = filter_findings(
+    conversation_findings = filter_findings(
         findings,
-        conversation_ids=contact_frame.conversation_id.unique(),
+        conversation_ids=conversation_frame.conversation_id.unique(),
         start=period_start,
         end=period_end,
     )
@@ -335,22 +369,23 @@ def main():
     c2.metric("Aktivní dny", filtered.timestamp.dt.date.nunique())
     c3.metric("Odesílatelé", filtered.sender.nunique())
     c4.metric("Medián odpovědi", duration(replies.median() if not replies.empty else None))
-    c5.metric("A4 nálezy", len(contact_findings))
+    c5.metric("A4 nálezy", len(conversation_findings))
 
+    st.caption(f"Kontakt: {contact} · conversation_id: `{conversation_frame.iloc[0].conversation_id}`")
     tabs = st.tabs(["Konverzace", "Časová osa", "Grafy", "Významná období", "Vybrané zprávy", "Analýza"])
     with tabs[0]:
         conversation(filtered)
     with tabs[1]:
-        timeline(filtered, contact_findings)
+        timeline(filtered, conversation_findings)
     with tabs[2]:
         charts(filtered) if not filtered.empty else st.info("Bez dat.")
     with tabs[3]:
-        significant_periods(findings, contact_frame, period_start, period_end, db_path)
+        significant_periods(findings, conversation_frame, period_start, period_end, db_path)
 
     selected, selection_source = active_selection()
     with tabs[4]:
         st.caption(f"Aktivní zdroj výběru: {selection_source}")
-        chosen, missing = resolve_evidence(contact_frame, selected)
+        chosen, missing = resolve_evidence(conversation_frame, selected)
         if missing:
             st.error("Aktivní výběr obsahuje nedostupné message_id: " + ", ".join(missing))
         if chosen.empty:
@@ -364,8 +399,8 @@ def main():
         st.caption(f"Aktivní zdroj výběru: {selection_source}")
         if selected:
             radius = int(st.number_input("Kontext před/po vybrané zprávě", 0, 100, 20, 5))
-            st.caption("Okolní kontext se načítá z původní chronologie kontaktu bez textového a sender filtru.")
-            packet = analysis_packet(contact_frame, selected, context_before=radius, context_after=radius)
+            st.caption("Okolní kontext se načítá z původní chronologie zvolené konverzace bez textového a sender filtru.")
+            packet = analysis_packet(conversation_frame, selected, context_before=radius, context_after=radius)
             payload = json.dumps(packet, ensure_ascii=False, indent=2)
             st.code(payload, language="json")
             st.download_button("Stáhnout A5 kontext", payload, "a5-context.json", "application/json")
@@ -403,7 +438,7 @@ def main():
                 last_execution = st.session_state.get("a6_last_execution")
                 last_selection = st.session_state.get("a6_last_analysis_selection", [])
                 if last_execution and list(selected) == list(last_selection):
-                    render_a5_execution(last_execution, contact_frame, db_path)
+                    render_a5_execution(last_execution, conversation_frame, db_path)
                 elif last_execution:
                     st.info("Poslední A5 výsledek patří k jinému výběru zpráv a proto se zde nezobrazuje.")
         else:
