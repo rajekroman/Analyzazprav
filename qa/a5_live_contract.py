@@ -2,23 +2,33 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
 
 from analyzazprav.a5_ai.integration_a6 import A6PacketError, messages_from_a6_packet
 from analyzazprav.a5_ai.models import (
-    AIAnalysisResult,
     AnalysisContext,
     AnalysisMode,
     AnalysisType,
+    EvidenceBackedClaim,
     MessageRecord,
 )
 from analyzazprav.a5_ai.validator import ValidationError, parse_and_validate_result
 
 VERDICT_VALID = "VALID"
-VERDICT_PARTIAL = "PARTIALLY_VALID"
 VERDICT_INVALID = "INVALID"
+
+
+def _claim(text: str, ids: list[str], confidence: float = 0.8, *, metric_refs: list[dict[str, str]] | None = None) -> dict[str, object]:
+    return {
+        "text": text,
+        "confidence": confidence,
+        "evidence": {
+            "message_ids": ids,
+            "description": "A7 pinned evidence claim",
+            "metric_refs": metric_refs or [],
+        },
+    }
 
 
 def audit_a5_contract() -> dict[str, object]:
@@ -71,17 +81,16 @@ def audit_a5_contract() -> dict[str, object]:
         evidence_message_ids=("1", "2"),
         metrics_during={"median_response_latency_seconds": 60.0},
     )
+    metric_ref = [{"phase": "during", "name": "median_response_latency_seconds"}]
     payload = {
-        "summary": "The interaction contains a response.",
+        "summary": _claim("The interaction contains a response.", ["1", "2"], metric_refs=metric_ref),
         "observations": [
             {
                 "text": "A reply follows the first message.",
                 "evidence": {
                     "message_ids": ["1", "2"],
                     "description": "Two-message sequence",
-                    "metric_refs": [
-                        {"phase": "during", "name": "median_response_latency_seconds"}
-                    ],
+                    "metric_refs": metric_ref,
                 },
                 "strength": 0.9,
             }
@@ -104,14 +113,15 @@ def audit_a5_contract() -> dict[str, object]:
                 "metric_refs": [],
             }
         ],
-        "turning_points": [],
-        "participant_p1": None,
-        "participant_p2": None,
-        "shared_dynamic": None,
+        "turning_points": [_claim("A reply appears.", ["2"])],
+        "participant_p1": _claim("P1 sends the opening message.", ["1"]),
+        "participant_p2": _claim("P2 replies.", ["2"]),
+        "shared_dynamic": _claim("The exchange is reciprocal in this segment.", ["1", "2"]),
         "alternative_explanations": ["The reply can be routine rather than relationally meaningful."],
         "unknowns": ["Intent is not directly observable."],
         "overall_confidence": 0.7,
     }
+
     try:
         result = parse_and_validate_result(payload, context)
     except ValidationError as exc:
@@ -126,116 +136,67 @@ def audit_a5_contract() -> dict[str, object]:
         evidence = result.observations[0].evidence
         expected_ids = ("1", "2")
         if evidence.message_ids != expected_ids or tuple(item.message_id for item in evidence.messages) != expected_ids:
-            issues.append({
-                "severity": "ERROR",
-                "code": "A5_MESSAGE_EVIDENCE_ID_MISMATCH",
-                "detail": "validated evidence snapshots do not preserve source message IDs",
-            })
+            issues.append({"severity": "ERROR", "code": "A5_MESSAGE_EVIDENCE_ID_MISMATCH", "detail": "structured evidence snapshots do not preserve source IDs"})
         if evidence.messages[0].timestamp != messages[0].timestamp.isoformat():
-            issues.append({
-                "severity": "ERROR",
-                "code": "A5_EVIDENCE_TIMESTAMP_MISMATCH",
-                "detail": "evidence timestamp was not derived exactly from AnalysisContext",
-            })
+            issues.append({"severity": "ERROR", "code": "A5_EVIDENCE_TIMESTAMP_MISMATCH", "detail": "timestamp was not derived exactly from AnalysisContext"})
         if evidence.messages[0].sender_id != "p1":
-            issues.append({
-                "severity": "ERROR",
-                "code": "A5_EVIDENCE_SENDER_MISMATCH",
-                "detail": "evidence sender was not derived exactly from AnalysisContext",
-            })
+            issues.append({"severity": "ERROR", "code": "A5_EVIDENCE_SENDER_MISMATCH", "detail": "sender was not derived exactly from AnalysisContext"})
         if evidence.messages[0].excerpt != "Evidence text with whitespace":
-            issues.append({
-                "severity": "ERROR",
-                "code": "A5_EVIDENCE_EXCERPT_MISMATCH",
-                "detail": f"unexpected normalized excerpt: {evidence.messages[0].excerpt!r}",
-            })
+            issues.append({"severity": "ERROR", "code": "A5_EVIDENCE_EXCERPT_MISMATCH", "detail": f"unexpected normalized excerpt: {evidence.messages[0].excerpt!r}"})
         if len(evidence.metrics) != 1 or evidence.metrics[0].value != 60.0:
-            issues.append({
-                "severity": "ERROR",
-                "code": "A5_METRIC_EVIDENCE_VALUE_MISMATCH",
-                "detail": "metric evidence was not enriched from deterministic context value",
-            })
+            issues.append({"severity": "ERROR", "code": "A5_METRIC_EVIDENCE_VALUE_MISMATCH", "detail": "metric value was not enriched from deterministic context"})
+
+        claims = [result.summary, *result.turning_points]
+        claims.extend(item for item in (result.participant_p1, result.participant_p2, result.shared_dynamic) if item is not None)
+        for index, claim in enumerate(claims):
+            if not isinstance(claim, EvidenceBackedClaim):
+                issues.append({"severity": "ERROR", "code": "A5_ASSERTION_NOT_EVIDENCE_BACKED", "detail": f"assertion claim {index} is not EvidenceBackedClaim"})
+                continue
+            if not claim.evidence.message_ids or not claim.evidence.messages:
+                issues.append({"severity": "ERROR", "code": "A5_ASSERTION_EVIDENCE_MISSING", "detail": f"assertion claim {index} lacks enriched message evidence"})
+            unknown = set(claim.evidence.message_ids) - {message.id for message in messages}
+            if unknown:
+                issues.append({"severity": "ERROR", "code": "A5_ASSERTION_EVIDENCE_OUTSIDE_CONTEXT", "detail": f"assertion claim {index} unknown IDs: {sorted(unknown)}"})
+
         for item in (*result.interpretations, *result.patterns):
-            ref = item.evidence
-            if ref is None or tuple(snapshot.message_id for snapshot in ref.messages) != expected_ids:
-                issues.append({
-                    "severity": "ERROR",
-                    "code": "A5_STRUCTURED_CLAIM_EVIDENCE_MISSING",
-                    "detail": "interpretation/pattern lacks source-derived evidence snapshots",
-                })
+            if item.evidence is None or tuple(snapshot.message_id for snapshot in item.evidence.messages) != expected_ids:
+                issues.append({"severity": "ERROR", "code": "A5_STRUCTURED_CLAIM_EVIDENCE_MISSING", "detail": "interpretation/pattern lacks source-derived evidence snapshots"})
 
-    invalid_payload = dict(payload)
-    invalid_payload["observations"] = [
-        {"text": "bad", "evidence": {"message_ids": ["999"]}, "strength": 0.5}
-    ]
+    bad_message_payload = dict(payload)
+    bad_message_payload["summary"] = _claim("Invented claim", ["999"])
     try:
-        parse_and_validate_result(invalid_payload, context)
+        parse_and_validate_result(bad_message_payload, context)
     except ValidationError:
         pass
     else:
-        issues.append({
-            "severity": "ERROR",
-            "code": "A5_UNKNOWN_MESSAGE_EVIDENCE_ACCEPTED",
-            "detail": "A5 accepted model evidence outside supplied AnalysisContext",
-        })
+        issues.append({"severity": "ERROR", "code": "A5_UNKNOWN_SUMMARY_EVIDENCE_ACCEPTED", "detail": "summary accepted message outside supplied AnalysisContext"})
 
-    invalid_metric_payload = dict(payload)
-    invalid_metric_payload["observations"] = [
-        {
-            "text": "bad metric",
-            "evidence": {
-                "message_ids": ["1"],
-                "metric_refs": [{"phase": "during", "name": "invented_metric"}],
-            },
-            "strength": 0.5,
-        }
-    ]
+    bad_metric_payload = dict(payload)
+    bad_metric_payload["summary"] = _claim(
+        "Invented metric claim",
+        ["1"],
+        metric_refs=[{"phase": "during", "name": "invented_metric"}],
+    )
     try:
-        parse_and_validate_result(invalid_metric_payload, context)
+        parse_and_validate_result(bad_metric_payload, context)
     except ValidationError:
         pass
     else:
-        issues.append({
-            "severity": "ERROR",
-            "code": "A5_UNKNOWN_METRIC_EVIDENCE_ACCEPTED",
-            "detail": "A5 accepted metric evidence outside deterministic AnalysisContext",
-        })
+        issues.append({"severity": "ERROR", "code": "A5_UNKNOWN_SUMMARY_METRIC_ACCEPTED", "detail": "summary accepted deterministic metric outside AnalysisContext"})
 
-    field_names = {field.name for field in fields(AIAnalysisResult)}
-    summary_evidence_fields = {
-        name for name in field_names if name.startswith("summary_") and "evidence" in name
-    }
-    partial_issues: list[dict[str, str]] = []
-    if not summary_evidence_fields:
-        partial_issues.append({
-            "severity": "WARNING",
-            "code": "A5_SUMMARY_EVIDENCE_CONTRACT_MISSING",
-            "detail": "AIAnalysisResult.summary is free text without a direct message/metric evidence field",
-        })
-
-    if issues:
-        verdict = VERDICT_INVALID
-    elif partial_issues:
-        verdict = VERDICT_PARTIAL
-    else:
-        verdict = VERDICT_VALID
     return {
-        "schema_version": 1,
-        "verdict": verdict,
-        "structured_evidence_checks": "PASS" if not issues else "FAIL",
-        "summary_evidence_fields": sorted(summary_evidence_fields),
-        "issues": [*issues, *partial_issues],
+        "schema_version": 2,
+        "verdict": VERDICT_INVALID if issues else VERDICT_VALID,
+        "structured_evidence_checks": "FAIL" if issues else "PASS",
+        "assertion_surface": "evidence_backed" if not issues else "invalid",
+        "issues": issues,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="A7 audit of pinned A5 evidence-chain contract")
     parser.add_argument("--report", type=Path)
-    parser.add_argument(
-        "--expect",
-        choices=[VERDICT_VALID, VERDICT_PARTIAL, VERDICT_INVALID],
-        default=VERDICT_VALID,
-    )
+    parser.add_argument("--expect", choices=[VERDICT_VALID, VERDICT_INVALID], default=VERDICT_VALID)
     args = parser.parse_args(argv)
     report = audit_a5_contract()
     rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
