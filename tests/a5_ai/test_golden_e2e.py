@@ -85,8 +85,9 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
             conn.execute(
                 "INSERT INTO message_relation VALUES (1, 3, 2, 'reply')"
             )
+            # Match the production A4 v9 persisted event type exactly.
             conn.execute(
-                "INSERT INTO a4_events_fixture VALUES (1, 7, 4, 'conflict', 0.82, ?, ?, ?, ?)",
+                "INSERT INTO a4_events_fixture VALUES (1, 7, 4, 'conflict_candidate', 0.82, ?, ?, ?, ?)",
                 (
                     us(first),
                     us(third),
@@ -180,9 +181,6 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
             self.assertEqual(result.turning_point_evidence[0].message_ids, ("2", "3"))
             self.assertEqual(result.shared_dynamic_evidence.message_ids, ("1", "2", "3"))
 
-            # Exercise the existing A6 packet contract with exactly the same
-            # canonical IDs used by the A5 evidence chain. This is the handoff
-            # invariant required for UI drill-down.
             packet = {
                 "schema_version": 1,
                 "selected_message_ids": ["2", "3"],
