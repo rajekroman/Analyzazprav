@@ -72,8 +72,26 @@ CREATE TABLE IF NOT EXISTS processed_message (
     has_question INTEGER NOT NULL CHECK(has_question IN (0,1)),
     has_url INTEGER NOT NULL CHECK(has_url IN (0,1)),
     has_attachment INTEGER NOT NULL CHECK(has_attachment IN (0,1)),
+    attachment_count INTEGER NOT NULL,
+    image_count INTEGER NOT NULL,
+    gif_count INTEGER NOT NULL,
+    video_count INTEGER NOT NULL,
+    audio_count INTEGER NOT NULL,
+    document_count INTEGER NOT NULL,
+    other_media_count INTEGER NOT NULL,
+    missing_attachment_count INTEGER NOT NULL,
     seconds_since_previous_message REAL,
-    seconds_since_previous_other_sender REAL
+    seconds_since_previous_other_sender REAL,
+    utc_year INTEGER,
+    utc_month INTEGER,
+    utc_day INTEGER,
+    utc_weekday INTEGER,
+    utc_hour INTEGER,
+    local_year INTEGER,
+    local_month INTEGER,
+    local_day INTEGER,
+    local_weekday INTEGER,
+    local_hour INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
@@ -90,5 +108,7 @@ CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
 
 CREATE INDEX IF NOT EXISTS idx_processed_message_session ON processed_message(session_id);
 CREATE INDEX IF NOT EXISTS idx_processed_message_thread ON processed_message(thread_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_utc_period ON processed_message(utc_year, utc_month, utc_day);
+CREATE INDEX IF NOT EXISTS idx_processed_message_local_period ON processed_message(local_year, local_month, local_day);
 CREATE INDEX IF NOT EXISTS idx_sender_run_conversation ON sender_run(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_session_conversation ON conversation_session(conversation_id, id);

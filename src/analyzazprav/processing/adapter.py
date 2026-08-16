@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from .models import A2Projection, CanonicalMessage, MessageRelation
+from .media import classify_media
+from .models import A2Projection, AttachmentRef, CanonicalMessage, MessageRelation
 
 
 def _parse_source_order(value: str | None) -> int | None:
@@ -23,29 +24,39 @@ def load_a2_projection(conn: sqlite3.Connection) -> A2Projection:
            FROM message_source
            ORDER BY message_id, id"""
     ):
-        source_rows.setdefault(
-            int(message_id),
-            (source_message_id, _parse_source_order(source_row_id)),
-        )
+        source_rows.setdefault(int(message_id), (source_message_id, _parse_source_order(source_row_id)))
 
-    attachments: dict[int, list[str]] = {}
-    for message_id, attachment_id, sha256_value, availability in conn.execute(
-        """SELECT message_id, attachment_id, sha256, availability
+    attachments: dict[int, list[AttachmentRef]] = {}
+    for row in conn.execute(
+        """SELECT message_id, attachment_id, sha256, mime_type, size_bytes,
+                  filename, availability, position
            FROM analysis_attachments
            ORDER BY message_id, position, attachment_id"""
     ):
-        key = sha256_value or f"attachment:{attachment_id}:{availability}"
-        attachments.setdefault(int(message_id), []).append(str(key))
+        message_id, attachment_id, sha256_value, mime_type, size_bytes, filename, availability, position = row
+        attachments.setdefault(int(message_id), []).append(
+            AttachmentRef(
+                id=int(attachment_id),
+                sha256=sha256_value,
+                mime_type=mime_type,
+                size_bytes=None if size_bytes is None else int(size_bytes),
+                filename=filename,
+                availability=str(availability),
+                position=None if position is None else int(position),
+                media_type=classify_media(mime_type, filename),
+            )
+        )
 
     messages: list[CanonicalMessage] = []
     for row in conn.execute(
-        """SELECT id, conversation_id, sender_id, sent_at_utc_us, text
+        """SELECT id, conversation_id, sender_id, sent_at_utc_us, timezone_offset_min,
+                  message_type, text
            FROM analysis_messages
            ORDER BY conversation_id,
                     CASE WHEN sent_at_utc_us IS NULL THEN 1 ELSE 0 END,
                     sent_at_utc_us, id"""
     ):
-        message_id, conversation_id, sender_id, timestamp_us, text = row
+        message_id, conversation_id, sender_id, timestamp_us, timezone_offset_min, message_type, text = row
         source_message_id, source_order = source_rows.get(int(message_id), (None, None))
         messages.append(
             CanonicalMessage(
@@ -56,7 +67,9 @@ def load_a2_projection(conn: sqlite3.Connection) -> A2Projection:
                 text=text,
                 source_message_id=source_message_id,
                 source_order=source_order,
-                attachment_keys=tuple(attachments.get(int(message_id), ())),
+                timezone_offset_min=None if timezone_offset_min is None else int(timezone_offset_min),
+                message_type=str(message_type or "text"),
+                attachments=tuple(attachments.get(int(message_id), ())),
             )
         )
 
@@ -70,8 +83,6 @@ def load_a2_projection(conn: sqlite3.Connection) -> A2Projection:
             metadata = json.loads(metadata_json or "{}")
         except json.JSONDecodeError:
             metadata = {"_invalid_metadata_json": metadata_json}
-        relations.append(
-            MessageRelation(int(source_id), int(target_id), str(relation_type), metadata)
-        )
+        relations.append(MessageRelation(int(source_id), int(target_id), str(relation_type), metadata))
 
     return A2Projection(tuple(messages), tuple(relations))

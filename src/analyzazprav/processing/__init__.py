@@ -3,6 +3,7 @@
 from .adapter import load_a2_projection
 from .models import (
     A2Projection,
+    AttachmentRef,
     CanonicalMessage,
     DuplicateCandidate,
     MessageFeatures,
@@ -18,6 +19,7 @@ from .store import ProcessingStore
 
 __all__ = [
     "A2Projection",
+    "AttachmentRef",
     "CanonicalMessage",
     "DuplicateCandidate",
     "MessageFeatures",
