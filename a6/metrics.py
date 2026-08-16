@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .a4_integrity import require_reconciled
 from .data import DataSourceError, _connect_read_only, _objects
 
 
@@ -25,7 +26,12 @@ def empty_a4_metrics() -> A4ConversationMetrics:
 
 
 def load_a4_conversation_metrics(path: str | Path, conversation_id: str) -> A4ConversationMetrics:
-    """Read A4 latest-run metrics for one conversation without recomputation."""
+    """Read reconciled A4 latest-run metrics for one conversation.
+
+    Legacy A4 databases without ``analysis_a4_reconciliation`` remain readable
+    for compatibility. Once the published reconciliation view exists, missing
+    or failed reconciliation is release-blocking and A6 fails closed.
+    """
 
     try:
         with _connect_read_only(path) as conn:
@@ -60,6 +66,12 @@ def load_a4_conversation_metrics(path: str | Path, conversation_id: str) -> A4Co
             participants = read("analysis_a4_participants")
             responses = read("analysis_a4_responses")
             conversation = read("analysis_a4_conversations")
+            if any(not frame.empty for frame in (daily, participants, responses, conversation)):
+                require_reconciled(
+                    conn,
+                    [str(conversation_id)],
+                    context="metriky",
+                )
     except DataSourceError:
         raise
     except Exception as exc:
