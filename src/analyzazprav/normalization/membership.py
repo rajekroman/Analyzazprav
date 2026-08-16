@@ -6,18 +6,23 @@ from typing import Any, Mapping, Sequence
 from .database import CanonicalDatabase
 
 
-def import_source_sha256(db: CanonicalDatabase, import_run_id: int) -> str:
+def import_source_snapshot(
+    db: CanonicalDatabase,
+    import_run_id: int,
+) -> tuple[str, str | None]:
     row = db.conn.execute(
-        "SELECT source_sha256 FROM import_run WHERE id=?", (import_run_id,)
+        "SELECT source_sha256, source_fingerprint FROM import_run WHERE id=?",
+        (import_run_id,),
     ).fetchone()
     if row is None:
         raise ValueError(f"Unknown import_run_id: {import_run_id}")
-    value = row["source_sha256"]
-    if not value:
-        raise ValueError(
-            "import_run.source_sha256 is required for source-scoped conversation identity"
-        )
-    return str(value)
+    source_sha256 = None if not row["source_sha256"] else str(row["source_sha256"])
+    if source_sha256:
+        return source_sha256, source_sha256
+    fingerprint = str(row["source_fingerprint"] or "").strip()
+    if not fingerprint:
+        raise ValueError("import_run has neither source_sha256 nor source_fingerprint")
+    return f"fingerprint:{fingerprint}", None
 
 
 def get_or_create_source_conversation(
@@ -36,18 +41,21 @@ def get_or_create_source_conversation(
 ) -> tuple[int, int]:
     """Resolve one source conversation without treating DB-local IDs as global.
 
-    Returns ``(conversation_id, conversation_source_id)``. A raw chat/ROWID may
-    repeat in another immutable source snapshot; ``source_sha256`` is therefore
-    part of source identity. Cross-snapshot canonical merging happens only when
-    an explicit stable ``canonical_key`` is supplied.
+    Returns ``(conversation_id, conversation_source_id)``. Source identity is
+    scoped by an immutable snapshot key. For A1 bundles the raw source SHA-256 is
+    the snapshot key; generic/direct imports fall back to their ingest fingerprint.
+    Cross-snapshot canonical merging happens only with an explicit canonical key.
     """
 
-    source_sha256 = source_sha256 or import_source_sha256(db, import_run_id)
+    inferred_snapshot_key, inferred_sha256 = import_source_snapshot(db, import_run_id)
+    snapshot_key = source_sha256 or inferred_snapshot_key
+    raw_sha256 = source_sha256 or inferred_sha256
+
     row = db.conn.execute(
         """SELECT id, conversation_id
            FROM conversation_source
-           WHERE source_type=? AND source_sha256=? AND source_conversation_id=?""",
-        (source_type, source_sha256, source_conversation_id),
+           WHERE source_type=? AND source_snapshot_key=? AND source_conversation_id=?""",
+        (source_type, snapshot_key, source_conversation_id),
     ).fetchone()
     if row is not None:
         conversation_id = int(row["conversation_id"])
@@ -83,14 +91,16 @@ def get_or_create_source_conversation(
                 conversation_id = int(cur.lastrowid)
             cur = db.conn.execute(
                 """INSERT INTO conversation_source(
-                       conversation_id, import_run_id, source_type, source_sha256,
-                       source_conversation_id, metadata_json
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                       conversation_id, import_run_id, source_type,
+                       source_snapshot_key, source_sha256, source_conversation_id,
+                       metadata_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     conversation_id,
                     import_run_id,
                     source_type,
-                    source_sha256,
+                    snapshot_key,
+                    raw_sha256,
                     source_conversation_id,
                     json.dumps(
                         metadata or {},
@@ -225,12 +235,7 @@ def add_attachment_occurrence(
     original_path: str | None = None,
     raw_payload: Mapping[str, Any] | None = None,
 ) -> tuple[int, int, bool]:
-    """Store one attachment occurrence without collapsing repeated blobs.
-
-    Returns ``(attachment_id, occurrence_id, created_source_occurrence)``.
-    ``source_occurrence_key`` makes failed-import retries idempotent while the
-    separate occurrence table preserves two identical blobs at positions 0/1.
-    """
+    """Store one attachment occurrence without collapsing repeated blobs."""
 
     source_occurrence_key = (
         f"{source_record_key}:attachment:"
