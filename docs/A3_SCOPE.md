@@ -27,10 +27,11 @@ A2 `participant` a `participant_identity` zůstávají kanonickou autoritou. A3 
 12. Explicit reply může překročit temporal session boundary; takový thread má `session_id = NULL`.
 13. Missing attachment zůstává reprezentovaný; parent message se neztrácí.
 14. Local calendar fields vznikají pouze z explicitního A2 `timezone_offset_min`; bez něj zůstávají `NULL`.
-15. Každý persisted processing run je auditovatelný a starší runs se při novém výpočtu nemažou.
+15. Každý persisted processing run je auditovatelný a starší runs se při novém výpočtu ani podporovaném schema upgrade nemažou.
 16. Participant alias se nikdy neslučuje pouze podle display name.
 17. Každý derived participant/alias mapping nese source participant/identity ID, metodu a confidence.
 18. Sender-run a opposite-sender timing používají resolved person identity, aby změna aliasu téže explicitně potvrzené osoby nevytvořila falešný turn/response.
+19. Integrované A3 v4 je podporovaný upgrade source pro v5 a jeho processing history musí zůstat logicky nezměněná.
 
 ## A2 v5 contract used
 
@@ -59,22 +60,27 @@ A3 vytvoří dva processed membership rows. Canonical `message_id=42` zůstává
 
 ## Participant resolution a aliasy
 
-A3 persistence obsahuje:
+A3 v5 persistence přidává pouze nové sidecar DERIVED tabulky:
 
 - `resolved_participant`;
 - `resolved_participant_member`;
 - `participant_alias`;
-- `participant_resolution_candidate`.
+- `participant_resolution_candidate`;
+- `sender_run_resolved_participant`;
+- `processed_message_resolved_sender`.
 
 Výchozí pravidla jsou záměrně konzervativní:
 
 - jeden A2 participant je samostatný resolved participant;
 - více A2 participants explicitně označených `is_self=1` se sjednotí do jednoho self group (`explicit_is_self_union_v1`, confidence `1.0`);
 - všechny A2 `participant_identity` záznamy se zachovají jako aliases s původním `participant_id` a `participant_identity_id`;
+- `participant_alias.participant_identity_id` je FK na A2 `participant_identity` a trigger ověřuje, že identita skutečně patří uloženému `participant_id`;
 - shodné normalizované `canonical_name` u různých non-self participants vytváří pouze `participant_resolution_candidate` (`confidence=0.35`), nikdy automatický merge;
 - neexistuje fuzzy/name-only destructive merge.
 
-`processed_message.resolved_sender_id` a `sender_run.resolved_participant_id` jsou DERIVED odkazy pro A4. Pokud dvě sousední zprávy patří dvěma explicitním self aliases téže resolved osoby, zůstávají v jednom sender-run a nevzniká falešná `seconds_since_previous_other_sender` hodnota.
+In-memory `ProcessedMessage.resolved_sender_id` a `SenderRun.resolved_participant_id` jsou DERIVED odkazy pro A4. V SQLite se ukládají additivně do `processed_message_resolved_sender` a `sender_run_resolved_participant`, takže v4 `processed_message` ani `sender_run` nemusí být přestavěny. Convenience views `analysis_processed_messages_resolved_latest` a `analysis_sender_runs_resolved_latest` zpřístupňují stejnou informaci pro SQL konzumenty.
+
+Pokud dvě sousední zprávy patří dvěma explicitním self aliases téže resolved osoby, zůstávají v jednom sender-run a nevzniká falešná `seconds_since_previous_other_sender` hodnota.
 
 ## Text processing
 
@@ -92,9 +98,11 @@ Pro timestamped membership A3 odvozuje UTC year/month/day/weekday/hour. Pokud A2
 
 A3 používá `database/a3_schema.sql` a ukládá immutable logical runs. `processing_run` obsahuje algorithm version, config, input membership count, unique canonical message count, output membership count a audit timestamps/status.
 
-`processed_message` má primární klíč `(processing_run_id, membership_id)`. Sender runs, sessions, threads a participant-resolution outputs jsou rovněž processing-run scoped. Convenience views zpřístupňují poslední completed run bez ztráty historie.
+`processed_message` má primární klíč `(processing_run_id, membership_id)`. Sender runs, sessions a threads zůstávají kompatibilní s integrovaným v4 schématem. Participant-resolution data jsou processing-run scoped sidecary a druhý výpočet nepřepisuje první.
 
-Pouze při detekci starého nekompatibilního **draft A3 schema** může A3 rebuildnout A3-derived tables; A2 tables se nikdy nedropují.
+`analysis_processed_messages_latest` zůstává zpětně kompatibilní v4 view. Nové resolved-person views jsou additivní.
+
+Integrované A3 v4 se při inicializaci v5 **nerebuilduje**. V5 pouze vytvoří nové sidecar tabulky/indexy/views; staré v4 processing runs a `processed_message` rows zůstávají zachované. Destruktivní rebuild je přípustný pouze pro detekovaný nekompatibilní **pre-v4 draft A3 schema**. A2 tables se nikdy nedropují.
 
 ## Duplicate audit
 
@@ -116,4 +124,4 @@ CLI reportuje memberships, canonical messages, resolved participants, aliases, s
 
 ## Vertical gate
 
-A3 promotion gate instaluje jednotný projekt, ověřuje `az-import --help`, `az-normalize --help`, `az-process --help` a spouští kompletní A1+A2+A3 regression suite. Release-blocking testy zahrnují membership preservation i participant-resolution/alias switching bez mutace A2 dat.
+A3 promotion gate instaluje jednotný projekt, ověřuje `az-import --help`, `az-normalize --help`, `az-process --help` a spouští kompletní A1+A2+A3 regression suite. Release-blocking testy zahrnují membership preservation, participant-resolution/alias switching bez mutace A2 dat a non-destructive upgrade integrované A3 v4 historie do v5 sidecar schématu.
