@@ -69,7 +69,7 @@ class A2CliTests(unittest.TestCase):
         code, payload = self._run(["init", "--database", str(self.database)])
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["schema_version"], "3")
+        self.assertEqual(payload["schema_version"], "4")
         self.assertTrue(self.database.is_file())
 
     def test_check_missing_database_fails_without_creating_it(self):
