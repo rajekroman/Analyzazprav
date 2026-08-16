@@ -175,6 +175,25 @@ class A4IntegratedMainContractTests(unittest.TestCase):
                 (response[2], response[1], response[0]),
             ).fetchone()
         )
+
+        reconciliation = self.db.conn.execute(
+            """SELECT conversation_id, a4_source_membership_count,
+                      a3_processed_membership_count, membership_count_delta,
+                      sender_accounted_membership_count,
+                      invalid_response_session_count,
+                      invalid_silence_session_count,
+                      invalid_event_session_count,
+                      uses_latest_processing_run, reconciliation_ok
+               FROM analysis_a4_reconciliation
+               ORDER BY conversation_id"""
+        ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in reconciliation],
+            [
+                (chat_a, 2, 2, 0, 2, 0, 0, 0, 1, 1),
+                (chat_b, 1, 1, 0, 1, 0, 0, 0, 1, 1),
+            ],
+        )
         self.assertEqual(self.db.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
 
