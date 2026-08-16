@@ -331,14 +331,17 @@ def import_generic_csv(
     parser_metadata: dict[str, object] | None = None
     if mapping_profile_path is not None:
         profile = CSVMappingProfile.load(mapping_profile_path)
-        profile_hash = sha256_file(mapping_profile_path)
-        # A2 fingerprints parser.version. Binding the full profile digest into
-        # the effective version prevents two different explicit mappings of the
-        # same immutable CSV from collapsing into one canonical import run.
-        parser_version = f"{GENERIC_CSV_PARSER_VERSION}+profile.{profile_hash}"
+        profile_file_hash = sha256_file(mapping_profile_path)
+        profile_semantic_hash = profile.semantic_sha256()
+        # A2 fingerprints parser.version. Binding canonical profile semantics
+        # prevents two genuinely different mappings of the same immutable CSV
+        # from collapsing, while harmless JSON whitespace changes remain stable.
+        parser_version = (
+            f"{GENERIC_CSV_PARSER_VERSION}+profile.{profile_semantic_hash}"
+        )
         parser_metadata = profile.manifest_metadata(
             profile_name=mapping_profile_path.name,
-            sha256=profile_hash,
+            file_sha256=profile_file_hash,
         )
 
     return _write_records(
