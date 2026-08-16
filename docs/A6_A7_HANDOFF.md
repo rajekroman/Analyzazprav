@@ -2,6 +2,8 @@
 
 Tento dokument definuje release-blocking validační body pro rozhraní A6. A7 nemá důvěřovat tomu, že zobrazení v UI je správné pouze proto, že A6 resolver nic nehlásí.
 
+Aktuální autoritativní baseline pro tento handoff je A4 v9 na `main`. Starší SQLite zdroje mohou být čteny pouze přes explicitně kompatibilní legacy cestu; A6 nesmí chybějící nové invarianty domýšlet.
+
 ## 1. A2 membership-scoped read model je lossless
 
 A2 `analysis_messages` od schema v5 reprezentuje membership zprávy v konverzaci, nikoli pouze fyzickou canonical message. A6 proto musí zachovat `membership_id` jako identitu read-model řádku.
@@ -40,11 +42,14 @@ Pokud A6 zobrazí přílohu u evidence message, A7 musí ověřit:
 
 Pokud databáze publikuje `analysis_a4_reconciliation`, A7 musí ověřit, že A6:
 
-1. považuje A4 metriky, findings a lexikální témata za autoritativní pouze při `reconciliation_ok=1` pro zvolenou konverzaci;
-2. při `reconciliation_ok=0` failuje closed s viditelnou chybou;
-3. při existujícím reconciliation view, ale chybějícím řádku pro konverzaci failuje closed;
-4. při více latest reconciliation řádcích pro jeden `conversation_id` failuje closed místo výběru jednoho;
-5. starší kompatibilní SQLite bez reconciliation view může číst pouze jako legacy kontrakt a nesmí si reconciliation výsledek domyslet.
+1. považuje A4 metriky, findings, lexikální témata a topic-marker evidence za autoritativní pouze při `reconciliation_ok=1` pro zvolenou konverzaci;
+2. při současném A4 kontraktu navíc nezávisle ověřuje `uses_latest_processing_run=1`;
+3. nezávisle ověřuje `a4_source_membership_count = a3_processed_membership_count = sender_accounted_membership_count` a `membership_count_delta=0`;
+4. nezávisle ověřuje nulové `invalid_response_session_count`, `invalid_silence_session_count` a `invalid_event_session_count`;
+5. při `reconciliation_ok=0` nebo při porušení kteréhokoli publikovaného accounting/session/latest-run invariantu failuje closed s viditelnou chybou;
+6. při existujícím reconciliation view, ale chybějícím řádku pro konverzaci failuje closed;
+7. při více latest reconciliation řádcích pro jeden `conversation_id` failuje closed místo výběru jednoho;
+8. starší kompatibilní SQLite bez reconciliation view může číst pouze jako legacy kontrakt a nesmí si reconciliation výsledek domyslet.
 
 ## 5. A4 finding → evidence
 
@@ -71,10 +76,28 @@ A4 `lexical_ngram_v1` je deterministická lexical evidence, nikoli latentní sé
 3. množina candidate `source_message_ids_json` se přesně shoduje s normalizovanými message rows v `analysis_a4_topic_evidence` pro daný `topic_key`;
 4. orphan evidence nebo orphan period `topic_key` způsobí chybu místo tichého odhození;
 5. pokud je publikované `analysis_a4_topic_period_reconciliation`, A6 ověří minimálně `evidence_row_count`, `topic_count` a `evidence_message_count` proti skutečně načteným řádkům;
-6. sparse `analysis_a4_topic_periods` se nezobrazuje jako dense nulová časová řada a chybějící období se neinterpretují;
-7. A6 phrase/salience neoznačuje jako motivaci, psychologický význam ani AI sémantický topic;
-8. topic drill-down vede přes exact message evidence až na A2 source provenance;
-9. použití topic evidence pro A5 zachová přesně evidence messages daného topic kandidáta.
+6. pokud reconciliation publikuje `dated_evidence_row_count` a `undated_evidence_row_count`, jejich součet musí přesně vysvětlit všechny topic evidence rows;
+7. sparse `analysis_a4_topic_periods` se nezobrazuje jako dense nulová časová řada a chybějící období se neinterpretují;
+8. A6 phrase/salience neoznačuje jako motivaci, psychologický význam ani AI sémantický topic;
+9. topic drill-down vede přes exact message evidence až na A2 source provenance;
+10. použití topic evidence pro A5 zachová přesně evidence messages daného topic kandidáta.
+
+## 6A. A4 topic × marker co-occurrence → exact evidence
+
+A4 `topic_marker_cooccurrence_v1` je pouze deterministická evidence, že ve stejné zprávě, která už je exact topic evidence, nastal alespoň jeden explicitně nakonfigurovaný lexical marker. Není to sentiment, emoce, motivace, diagnóza ani psychologický stav.
+
+Pokud databáze publikuje topic-marker views, A7 musí ověřit, že A6:
+
+1. čte message-level rows výhradně z `analysis_a4_topic_marker_evidence` a zachovává původní `topic_key`, `message_id`, `participant_id`, časová metadata, `topic_occurrence_count`, `affection_hit_count` a `negative_hit_count`;
+2. každý `(topic_key, message_id)` marker row má přesný parent v `analysis_a4_topic_evidence` stejné konverzace;
+3. duplicitní `(topic_key, message_id)` marker rows failují closed;
+4. oba hit counts jsou nezáporné a alespoň jeden je `> 0`;
+5. marker evidence zůstává sparse podmnožinou topic evidence; neutrální topic evidence se nesmí odstranit ani přepsat;
+6. při neprázdné marker evidence vyžaduje `analysis_a4_topic_marker_reconciliation` a nezávisle ověří `topic_evidence_row_count`, `marker_evidence_row_count`, `affection_evidence_row_count`, `negative_evidence_row_count` a `reconciliation_ok=1`;
+7. orphan `topic_key` v marker evidence/summary/period views failuje closed;
+8. `affection_hit_count` ani `negative_hit_count` se v A6 neprezentují jako prokázaný sentiment nebo vztahový význam;
+9. marker evidence drill-down musí vést přes stejný canonical `message_id` až na A2 source provenance;
+10. chybějící marker views ve starším kompatibilním SQLite zdroji jsou explicitně nepřítomná capability, nikoli nulové marker skóre.
 
 ## 7. A6 selection → A5 packet
 
@@ -135,7 +158,7 @@ Tím se zabrání tomu, aby UI zobrazovalo nebo analyzovalo evidence z jiné kon
 
 Před označením A6/A7 za hotové musí existovat golden dataset, který projde:
 
-`A1 → A2 → A3 → A4 reconciliation/metrics/finding/topic → A6 evidence drill-down → A5 → A6 result drill-down`
+`A1 → A2 → A3 → A4 reconciliation/metrics/finding/topic/topic-marker → A6 evidence drill-down → A5 → A6 result drill-down`
 
 A7 musí pro tento běh potvrdit:
 
@@ -143,9 +166,10 @@ A7 musí pro tento běh potvrdit:
 - A2 membership integrity včetně unknown-time řádků;
 - canonical message provenance;
 - canonical attachment occurrence + source provenance;
-- A4 reconciliation integrity;
+- A4 reconciliation integrity včetně latest-processing, membership accounting a session provenance;
 - A4 finding evidence integrity;
 - A4 lexical topic candidate/evidence/period reconciliation integrity;
+- pokud je přítomná marker evidence, A4 topic-marker exact-parent/subset/reconciliation integrity;
 - A6 packet integrity;
 - A5 assertion-level evidence integrity;
 - source provenance až k původnímu A1 záznamu.
