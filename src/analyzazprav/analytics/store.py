@@ -9,7 +9,7 @@ from typing import Sequence
 from .config import AnalyticsConfig
 from .models import ConversationAnalytics
 
-ANALYTICS_VERSION = "3"
+ANALYTICS_VERSION = "4"
 
 
 class AnalyticsStore:
@@ -23,12 +23,41 @@ class AnalyticsStore:
     def _default_schema_path() -> Path:
         return Path(__file__).resolve().parents[3] / "database" / "a4_schema.sql"
 
+    def _table_exists(self, table_name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
     def _needs_derived_schema_rebuild(self) -> bool:
-        rows = self.conn.execute("PRAGMA table_info(analytics_response_latency)").fetchall()
-        if not rows:
-            return False
-        columns = {str(row[1]) for row in rows}
-        return "response_effort_ratio" not in columns
+        latency_rows = self.conn.execute(
+            "PRAGMA table_info(analytics_response_latency)"
+        ).fetchall()
+        if latency_rows:
+            latency_columns = {str(row[1]) for row in latency_rows}
+            if "response_effort_ratio" not in latency_columns:
+                return True
+
+        participant_rows = self.conn.execute(
+            "PRAGMA table_info(analytics_participant_summary)"
+        ).fetchall()
+        if participant_rows:
+            participant_columns = {str(row[1]) for row in participant_rows}
+            if "mean_response_latency_seconds" not in participant_columns:
+                return True
+            if "unanswered_turn_count" not in participant_columns:
+                return True
+
+        if self._table_exists("analytics_run") and not self._table_exists(
+            "analytics_time_bucket"
+        ):
+            return True
+        if self._table_exists("analytics_run") and not self._table_exists(
+            "analytics_silence_event"
+        ):
+            return True
+        return False
 
     def _drop_derived_schema(self) -> None:
         # A4 tables contain only reproducible derived data. Rebuilding an obsolete
@@ -40,6 +69,8 @@ class AnalyticsStore:
             "analysis_a4_periods",
             "analysis_a4_changes",
             "analysis_a4_daily",
+            "analysis_a4_silences",
+            "analysis_a4_time_buckets",
             "analysis_a4_responses",
             "analysis_a4_participants",
             "analysis_a4_conversations",
@@ -53,6 +84,8 @@ class AnalyticsStore:
             "analytics_period_participant",
             "analytics_change_point",
             "analytics_daily_participant",
+            "analytics_silence_event",
+            "analytics_time_bucket",
             "analytics_response_latency",
             "analytics_participant_summary",
             "analytics_conversation_summary",
@@ -134,9 +167,15 @@ class AnalyticsStore:
                                message_count, word_count, character_count, active_days, turn_count,
                                initiations, initiation_share, question_count, exclamation_count,
                                affection_marker_count, negative_marker_count,
-                               median_response_latency_seconds, median_response_effort_ratio,
-                               engagement_score
-                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               response_turn_count, latency_sample_count, unanswered_turn_count,
+                               mean_response_latency_seconds, median_response_latency_seconds,
+                               p25_response_latency_seconds, p75_response_latency_seconds,
+                               p90_response_latency_seconds, median_response_effort_ratio,
+                               clock_known_message_count, weekend_message_count,
+                               night_message_count, engagement_score
+                           ) VALUES (
+                               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           )""",
                         (
                             run_id,
                             result.conversation_id,
@@ -152,8 +191,18 @@ class AnalyticsStore:
                             metrics["exclamation_count"],
                             metrics["affection_marker_count"],
                             metrics["negative_marker_count"],
+                            metrics["response_turn_count"],
+                            metrics["latency_sample_count"],
+                            metrics["unanswered_turn_count"],
+                            metrics["mean_response_latency_seconds"],
                             metrics["median_response_latency_seconds"],
+                            metrics["p25_response_latency_seconds"],
+                            metrics["p75_response_latency_seconds"],
+                            metrics["p90_response_latency_seconds"],
                             metrics["median_response_effort_ratio"],
+                            metrics["clock_known_message_count"],
+                            metrics["weekend_message_count"],
+                            metrics["night_message_count"],
                             metrics["engagement_score"],
                         ),
                     )
@@ -176,6 +225,49 @@ class AnalyticsStore:
                             sample.response_effort_ratio,
                         )
                         for sample in result.response_samples
+                    ],
+                )
+                self.conn.executemany(
+                    """INSERT INTO analytics_time_bucket(
+                           analytics_run_id, conversation_id, participant_id,
+                           time_basis, bucket_kind, bucket_value, message_count,
+                           source_message_ids_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id,
+                            row.conversation_id,
+                            row.participant_id,
+                            row.time_basis,
+                            row.bucket_kind,
+                            row.bucket_value,
+                            row.message_count,
+                            json.dumps(row.source_message_ids),
+                        )
+                        for row in result.time_buckets
+                    ],
+                )
+                self.conn.executemany(
+                    """INSERT INTO analytics_silence_event(
+                           analytics_run_id, conversation_id, previous_session_id,
+                           next_session_id, gap_seconds, previous_turn_id, return_turn_id,
+                           before_participant_id, return_participant_id,
+                           source_message_ids_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id,
+                            event.conversation_id,
+                            event.previous_session_id,
+                            event.next_session_id,
+                            event.gap_seconds,
+                            event.previous_turn_id,
+                            event.return_turn_id,
+                            event.before_participant_id,
+                            event.return_participant_id,
+                            json.dumps(event.source_message_ids),
+                        )
+                        for event in result.silence_events
                     ],
                 )
                 self.conn.executemany(
