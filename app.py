@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import streamlit as st
 
+from a6.a5_bridge import A5Unavailable, a5_available, run_local_a5
 from a6.data import (
     DataSourceError,
     SourceInfo,
@@ -199,7 +200,11 @@ def significant_periods(
     chosen_label = st.selectbox("Analytický nález", list(options))
     finding = relevant[relevant.finding_id == options[chosen_label]].iloc[0]
 
-    st.json(json.loads(finding.details) if finding.details else {})
+    try:
+        details = json.loads(finding.details) if finding.details else {}
+    except json.JSONDecodeError:
+        details = {"raw_details": finding.details}
+    st.json(details)
     evidence, missing = resolve_evidence(contact_frame, finding.evidence_message_ids)
     if missing:
         st.error("A4 evidence obsahuje message_id, které A6 v kanonických zprávách nenašlo: " + ", ".join(missing))
@@ -215,6 +220,74 @@ def significant_periods(
         st.session_state.a6_finding_selected = evidence_ids
         st.session_state.a6_selection_source = "finding"
         st.success("Evidence nálezu byla nastavena jako aktivní výběr pro A5.")
+
+
+def render_result_evidence(
+    message_ids: list[str],
+    contact_frame: pd.DataFrame,
+    db_path: str | None,
+) -> None:
+    evidence, missing = resolve_evidence(contact_frame, message_ids)
+    if missing:
+        st.error("A5 odkazuje na message_id, které nejsou v aktuálních kanonických datech: " + ", ".join(missing))
+    if not evidence.empty:
+        render_message_evidence(evidence, provenance_for(db_path, list(evidence.message_id.astype(str))))
+
+
+def render_a5_execution(execution: dict, contact_frame: pd.DataFrame, db_path: str | None) -> None:
+    status = str(execution.get("status") or "unknown")
+    st.markdown(f"### Výsledek A5 · `{status}`")
+    if execution.get("context_hash"):
+        st.caption(f"context_hash: `{execution['context_hash']}`")
+    result = execution.get("result")
+    if not result:
+        st.error(str(execution.get("error") or "A5 nevrátil validní výsledek."))
+        return
+
+    st.write(result.get("summary") or "")
+    st.metric("Celková jistota", f"{float(result.get('overall_confidence', 0.0)):.2f}")
+
+    observations = result.get("observations") or []
+    if observations:
+        st.markdown("#### Pozorování")
+        for index, observation in enumerate(observations, start=1):
+            evidence_ref = observation.get("evidence") or {}
+            ids = [str(value) for value in evidence_ref.get("message_ids") or []]
+            with st.expander(f"{index}. {observation.get('text', '')}"):
+                st.caption(f"síla: {float(observation.get('strength', 0.0)):.2f}")
+                if evidence_ref.get("description"):
+                    st.write(evidence_ref["description"])
+                render_result_evidence(ids, contact_frame, db_path)
+
+    interpretations = result.get("interpretations") or []
+    if interpretations:
+        st.markdown("#### Interpretace")
+        for index, interpretation in enumerate(interpretations, start=1):
+            ids = [str(value) for value in interpretation.get("evidence_message_ids") or []]
+            with st.expander(f"{index}. {interpretation.get('text', '')}"):
+                st.caption(f"jistota: {float(interpretation.get('confidence', 0.0)):.2f}")
+                render_result_evidence(ids, contact_frame, db_path)
+
+    patterns = result.get("patterns") or []
+    if patterns:
+        st.markdown("#### Vzorce")
+        for index, pattern in enumerate(patterns, start=1):
+            ids = [str(value) for value in pattern.get("evidence_message_ids") or []]
+            title = f"{index}. {pattern.get('pattern_type', 'pattern')} · {pattern.get('description', '')}"
+            with st.expander(title):
+                st.caption(f"jistota: {float(pattern.get('confidence', 0.0)):.2f}")
+                render_result_evidence(ids, contact_frame, db_path)
+
+    alternatives = result.get("alternative_explanations") or []
+    if alternatives:
+        st.markdown("#### Alternativní vysvětlení")
+        for item in alternatives:
+            st.markdown(f"- {item}")
+    unknowns = result.get("unknowns") or []
+    if unknowns:
+        st.markdown("#### Nejistoty / chybějící informace")
+        for item in unknowns:
+            st.markdown(f"- {item}")
 
 
 def main():
@@ -296,7 +369,43 @@ def main():
             payload = json.dumps(packet, ensure_ascii=False, indent=2)
             st.code(payload, language="json")
             st.download_button("Stáhnout A5 kontext", payload, "a5-context.json", "application/json")
-            st.caption("Packet schema v1 je přímo podporováno A5 adapterem; samotné modelové volání zůstává explicitní a nikdy se nespouští automaticky.")
+
+            st.markdown("### Lokální AI analýza")
+            if not a5_available():
+                st.info("A5 modul zatím není součástí tohoto A6 checkoutu. Po integraci A5 se zde zpřístupní explicitní lokální Ollama analýza; export packetu zůstává funkční už nyní.")
+            else:
+                model_name = st.text_input("Ollama model", "qwen3:8b")
+                base_url = st.text_input("Ollama URL", "http://localhost:11434")
+                analysis_type = st.selectbox(
+                    "Typ analýzy",
+                    ["segment", "change_point", "conflict", "interaction_cycle", "longitudinal", "relationship_dynamics", "psychological_hypotheses"],
+                )
+                mode = st.selectbox("Režim", ["blind", "retrospective"])
+                user_question = st.text_area("Volitelná otázka pro A5").strip()
+                if st.button("Spustit A5 lokálně přes Ollama"):
+                    try:
+                        with st.spinner("Probíhá lokální A5 analýza…"):
+                            execution = run_local_a5(
+                                packet,
+                                model_name=model_name,
+                                base_url=base_url,
+                                analysis_type=analysis_type,
+                                mode=mode,
+                                user_question=user_question or None,
+                            )
+                        st.session_state.a6_last_execution = execution
+                        st.session_state.a6_last_analysis_selection = list(selected)
+                    except (A5Unavailable, ValueError) as exc:
+                        st.error(str(exc))
+                    except Exception as exc:
+                        st.error(f"A5 analýzu se nepodařilo spustit: {exc}")
+
+                last_execution = st.session_state.get("a6_last_execution")
+                last_selection = st.session_state.get("a6_last_analysis_selection", [])
+                if last_execution and list(selected) == list(last_selection):
+                    render_a5_execution(last_execution, contact_frame, db_path)
+                elif last_execution:
+                    st.info("Poslední A5 výsledek patří k jinému výběru zpráv a proto se zde nezobrazuje.")
         else:
             st.info("Vyberte zprávy ručně nebo použijte evidence některého A4 nálezu.")
 
