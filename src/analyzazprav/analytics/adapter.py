@@ -9,7 +9,6 @@ from typing import Iterable
 from .config import AnalyticsConfig
 from .engine_v6 import analyze_conversation
 from .models import AnalyticMessage, ConversationAnalytics
-from .versioning import analysis_signature
 
 
 def _date_string(year: int | None, month: int | None, day: int | None) -> str | None:
@@ -25,7 +24,7 @@ def _columns(conn: sqlite3.Connection, name: str) -> set[str]:
 def _latest_completed_processing_run_id(conn: sqlite3.Connection) -> int | None:
     try:
         row = conn.execute(
-            "SELECT id FROM processing_run WHERE status = 'completed' ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM processing_run WHERE status='completed' ORDER BY id DESC LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
         return None
@@ -36,19 +35,28 @@ def _analytic_query(
     conn: sqlite3.Connection,
     conversation_id: int | None,
 ) -> tuple[str, tuple[int, ...], bool]:
-    """Build the A4 read query over the integrated A2/A3 contract.
+    """Build the A4 read query over the current A2/A3 contract.
 
-    Production databases expose `analysis_messages.membership_id` and A3's
-    `analysis_processed_messages_latest`. Joining by membership is authoritative:
-    one canonical message may legitimately belong to several conversations.
-
-    A narrow legacy-fixture fallback remains only so isolated unit tests can
-    exercise A4 calculations without recreating the whole A1-A3 schema.
+    Membership identity is authoritative for source accounting. Participant
+    attribution uses A3's resolved sender when available, falling back to the
+    canonical A2 sender. Resolution never changes message/membership provenance.
     """
 
     am_columns = _columns(conn, "analysis_messages")
-    latest_columns = _columns(conn, "analysis_processed_messages_latest")
-    integrated_contract = bool(latest_columns) and "membership_id" in am_columns
+    resolved_latest_columns = _columns(conn, "analysis_processed_messages_resolved_latest")
+    basic_latest_columns = _columns(conn, "analysis_processed_messages_latest")
+
+    use_resolved_latest = (
+        "membership_id" in am_columns
+        and "membership_id" in resolved_latest_columns
+        and "resolved_sender_id" in resolved_latest_columns
+    )
+    use_basic_latest = (
+        not use_resolved_latest
+        and "membership_id" in am_columns
+        and "membership_id" in basic_latest_columns
+    )
+    integrated_contract = use_resolved_latest or use_basic_latest
 
     params: list[int] = []
     filters: list[str] = []
@@ -58,10 +66,20 @@ def _analytic_query(
     where_clause = "WHERE " + " AND ".join(filters) if filters else ""
 
     if integrated_contract:
+        source_view = (
+            "analysis_processed_messages_resolved_latest"
+            if use_resolved_latest
+            else "analysis_processed_messages_latest"
+        )
+        participant_expr = (
+            "COALESCE(pm.resolved_sender_id, am.sender_id)"
+            if use_resolved_latest
+            else "am.sender_id"
+        )
         query = f"""
 SELECT am.id,
        am.conversation_id,
-       am.sender_id,
+       {participant_expr} AS analytic_participant_id,
        am.sent_at_utc_us,
        COALESCE(pm.text_clean, ''),
        pm.session_id,
@@ -83,7 +101,7 @@ SELECT am.id,
        pm.local_hour,
        am.membership_id
 FROM analysis_messages AS am
-JOIN analysis_processed_messages_latest AS pm
+JOIN {source_view} AS pm
   ON pm.membership_id = am.membership_id
  AND pm.message_id = am.id
  AND pm.conversation_id = am.conversation_id
@@ -92,6 +110,7 @@ ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
 """
         return query, tuple(params), True
 
+    # Narrow legacy-fixture fallback for isolated A4 calculation tests.
     pm_columns = _columns(conn, "processed_message")
     if not pm_columns:
         raise RuntimeError("A4 requires A3 processed_message data")
@@ -100,9 +119,17 @@ ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
     has_pm_conversation = "conversation_id" in pm_columns
     has_pm_membership = "membership_id" in pm_columns
     has_am_membership = "membership_id" in am_columns
+    resolved_sender_columns = _columns(conn, "processed_message_resolved_sender")
+    can_join_resolved = (
+        has_pm_run
+        and has_pm_membership
+        and "processing_run_id" in resolved_sender_columns
+        and "membership_id" in resolved_sender_columns
+        and "resolved_participant_id" in resolved_sender_columns
+    )
+
     joins = ["pm.message_id = am.id"]
     fallback_params: list[int] = []
-
     if has_pm_conversation:
         joins.append("pm.conversation_id = am.conversation_id")
     if has_pm_membership and has_am_membership:
@@ -123,11 +150,20 @@ ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
     )
     membership_expr = "am.membership_id" if has_am_membership else "NULL"
     membership_order = ", am.membership_id" if has_am_membership else ""
+    resolved_join = ""
+    participant_expr = "am.sender_id"
+    if can_join_resolved:
+        resolved_join = """
+LEFT JOIN processed_message_resolved_sender AS pmrs
+  ON pmrs.processing_run_id = pm.processing_run_id
+ AND pmrs.membership_id = pm.membership_id
+"""
+        participant_expr = "COALESCE(pmrs.resolved_participant_id, am.sender_id)"
 
     query = f"""
 SELECT am.id,
        am.conversation_id,
-       am.sender_id,
+       {participant_expr} AS analytic_participant_id,
        am.sent_at_utc_us,
        COALESCE(pm.text_clean, ''),
        pm.session_id,
@@ -151,6 +187,7 @@ SELECT am.id,
 FROM analysis_messages AS am
 JOIN processed_message AS pm
   ON {' AND '.join(joins)}
+{resolved_join}
 {fallback_where}
 ORDER BY am.conversation_id, pm.sequence_number, am.id{membership_order}
 """
@@ -286,47 +323,3 @@ def analyze_database(
     cfg = config or AnalyticsConfig()
     grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
     return _analyze_grouped(grouped, cfg)
-
-
-def _latest_analysis_states(conn: sqlite3.Connection) -> dict[int, tuple[str, str]]:
-    """Return latest v6 source fingerprint + analysis signature by conversation."""
-
-    try:
-        rows = conn.execute(
-            """SELECT s.conversation_id, s.source_fingerprint, s.analysis_signature
-               FROM analytics_conversation_state_v6 AS s
-               JOIN analysis_a4_latest_conversation_run AS r
-                 ON r.conversation_id = s.conversation_id
-                AND r.analytics_run_id = s.analytics_run_id"""
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return {}
-    return {
-        int(row[0]): (str(row[1]), str(row[2]))
-        for row in rows
-        if row[1] is not None and row[2] is not None
-    }
-
-
-def analyze_incremental_database(
-    conn: sqlite3.Connection,
-    config: AnalyticsConfig | None = None,
-    conversation_ids: Iterable[int] | None = None,
-) -> list[ConversationAnalytics]:
-    """Recompute whole conversations when source or analysis rules changed."""
-
-    cfg = config or AnalyticsConfig()
-    grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
-    previous = _latest_analysis_states(conn)
-    expected_signature = analysis_signature(cfg)
-
-    changed: dict[int, list[AnalyticMessage]] = {}
-    for conversation_id, source in grouped.items():
-        current_source_fingerprint = conversation_fingerprint(source)
-        if previous.get(conversation_id) != (
-            current_source_fingerprint,
-            expected_signature,
-        ):
-            changed[conversation_id] = source
-
-    return _analyze_grouped(changed, cfg)
