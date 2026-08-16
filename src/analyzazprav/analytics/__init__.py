@@ -11,6 +11,8 @@ from .models import (
     DyadicRegime,
     EngagementPeriodSignal,
     PeriodParticipantMetric,
+    SilenceEvent,
+    TimeBucketMetric,
 )
 from .store import AnalyticsStore
 
@@ -24,6 +26,8 @@ __all__ = [
     "DyadicRegime",
     "EngagementPeriodSignal",
     "PeriodParticipantMetric",
+    "SilenceEvent",
+    "TimeBucketMetric",
     "analyze_conversation",
     "analyze_database",
     "build_turns",
