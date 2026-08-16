@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from .adapter import analyze_database, analyze_incremental_database
+from .adapter_v7 import analyze_database, analyze_incremental_database
 from .config import AnalyticsConfig
 from .store_v8 import AnalyticsStore
 
