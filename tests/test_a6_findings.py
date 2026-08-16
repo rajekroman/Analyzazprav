@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pandas as pd
@@ -11,7 +10,7 @@ from a6.findings import filter_findings, load_a4_findings, resolve_evidence
 from a6.provenance import load_message_sources
 
 
-def _a4_fixture(path):
+def _a4_fixture(path, *, reconciliation_ok: int = 1):
     with sqlite3.connect(path) as conn:
         conn.execute(
             "CREATE TABLE analysis_a4_events (id INTEGER, conversation_id INTEGER, event_type TEXT, score REAL, start_at_utc_us INTEGER, end_at_utc_us INTEGER, factors_json TEXT, source_message_ids_json TEXT)"
@@ -22,6 +21,10 @@ def _a4_fixture(path):
         conn.execute(
             "CREATE TABLE analysis_a4_regimes (conversation_id INTEGER, period_start TEXT, period_end TEXT, participant_a_id INTEGER, participant_a_direction TEXT, participant_a_score REAL, participant_b_id INTEGER, participant_b_direction TEXT, participant_b_score REAL, regime_type TEXT, source_message_ids_json TEXT)"
         )
+        conn.execute(
+            "CREATE TABLE analysis_a4_reconciliation (conversation_id INTEGER, reconciliation_ok INTEGER)"
+        )
+        conn.execute("INSERT INTO analysis_a4_reconciliation VALUES (?, ?)", (42, reconciliation_ok))
         start_us = int(pd.Timestamp("2026-08-02T10:00:00Z").timestamp() * 1_000_000)
         end_us = int(pd.Timestamp("2026-08-02T11:00:00Z").timestamp() * 1_000_000)
         conn.execute(
@@ -77,6 +80,25 @@ def test_malformed_a4_evidence_fails_closed(tmp_path):
         conn.execute("INSERT INTO analysis_a4_events VALUES (1, 1, 'x', 1.0, 0, 0, '{}', 'not-json')")
         conn.commit()
     with pytest.raises(DataSourceError):
+        load_a4_findings(db_path)
+
+
+def test_duplicate_a4_evidence_ids_fail_closed(tmp_path):
+    db_path = tmp_path / "duplicate.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE analysis_a4_events (id INTEGER, conversation_id INTEGER, event_type TEXT, score REAL, start_at_utc_us INTEGER, end_at_utc_us INTEGER, factors_json TEXT, source_message_ids_json TEXT)"
+        )
+        conn.execute("INSERT INTO analysis_a4_events VALUES (1, 1, 'x', 1.0, 0, 0, '{}', '[\"1\", \"1\"]')")
+        conn.commit()
+    with pytest.raises(DataSourceError, match="duplicitní ID"):
+        load_a4_findings(db_path)
+
+
+def test_a4_findings_fail_closed_when_reconciliation_fails(tmp_path):
+    db_path = tmp_path / "unreconciled.sqlite"
+    _a4_fixture(db_path, reconciliation_ok=0)
+    with pytest.raises(DataSourceError, match="reconciliation_ok=0"):
         load_a4_findings(db_path)
 
 
