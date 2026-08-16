@@ -12,15 +12,15 @@ APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 def _pipeline_fixture(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
-            "CREATE TABLE analysis_messages (membership_id INTEGER, id INTEGER, conversation_id INTEGER, sender_name TEXT, sent_at_utc_us INTEGER, timestamp_precision TEXT, timestamp_quality TEXT, text TEXT)"
+            "CREATE TABLE analysis_messages (membership_id INTEGER, id INTEGER, conversation_id INTEGER, sender_id INTEGER, sender_name TEXT, sent_at_utc_us INTEGER, timestamp_precision TEXT, timestamp_quality TEXT, text TEXT)"
         )
         conn.executemany(
-            "INSERT INTO analysis_messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO analysis_messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (101, 1, 42, "Osoba A", 1785571200000000, "microsecond", "exact", "První zpráva"),
-                (102, 2, 42, "Osoba B", 1785571320000000, "microsecond", "exact", "Odpověď"),
-                (103, 3, 42, "Osoba A", 1785571500000000, "microsecond", "exact", "Pokračování"),
-                (104, 4, 42, "Osoba B", None, "unknown", "unknown", "Zpráva bez času"),
+                (101, 1, 42, 7, "Osoba A", 1785571200000000, "microsecond", "exact", "První zpráva"),
+                (102, 2, 42, 8, "Osoba B", 1785571320000000, "microsecond", "exact", "Odpověď"),
+                (103, 3, 42, 7, "Osoba A", 1785571500000000, "microsecond", "exact", "Pokračování"),
+                (104, 4, 42, 8, "Osoba B", None, "unknown", "unknown", "Zpráva bez času"),
             ],
         )
         conn.execute("CREATE TABLE analysis_conversations (id INTEGER, title TEXT, canonical_key TEXT)")
