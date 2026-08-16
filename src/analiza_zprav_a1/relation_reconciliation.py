@@ -24,17 +24,31 @@ def _tables(conn: sqlite3.Connection) -> set[str]:
     }
 
 
-def _relation_provenance_enabled(manifest: dict[str, Any]) -> bool:
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    escaped = table.replace("'", "''")
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info('{escaped}')")}
+
+
+def _parser_version(manifest: dict[str, Any]) -> tuple[int, ...] | None:
     source = manifest.get("source") or {}
     parser = manifest.get("parser") or {}
     if source.get("type") != "imessage_chat_db" or parser.get("name") != "imessage-chatdb":
-        return False
+        return None
     version = str(parser.get("version") or "").split("+", 1)[0]
     try:
-        parts = tuple(int(part) for part in version.split("."))
+        return tuple(int(part) for part in version.split("."))
     except ValueError:
-        return False
-    return parts >= (0, 8, 0)
+        return None
+
+
+def _relation_provenance_enabled(manifest: dict[str, Any]) -> bool:
+    version = _parser_version(manifest)
+    return version is not None and version >= (0, 8, 0)
+
+
+def _sender_provenance_enabled(manifest: dict[str, Any]) -> bool:
+    version = _parser_version(manifest)
+    return version is not None and version >= (0, 9, 0)
 
 
 def _participant_relations(
@@ -123,6 +137,56 @@ def _expected_chat_provenance(
     }
 
 
+def _expected_sender_provenance(
+    conn: sqlite3.Connection,
+    message_id: str,
+    message_columns: set[str],
+    tables: set[str],
+) -> dict[str, Any]:
+    if "handle_id" not in message_columns:
+        return {
+            "raw_handle_id": None,
+            "resolution_status": "handle_id_column_missing",
+        }
+
+    row = conn.execute(
+        "SELECT handle_id FROM message WHERE ROWID=?",
+        (int(message_id),),
+    ).fetchone()
+    raw_handle_id = None if row is None else row[0]
+    if raw_handle_id is None:
+        return {
+            "raw_handle_id": None,
+            "resolution_status": "missing_handle_id",
+        }
+    if "handle" not in tables:
+        return {
+            "raw_handle_id": raw_handle_id,
+            "resolution_status": "handle_table_missing",
+        }
+
+    handle_row = conn.execute(
+        "SELECT ROWID, id FROM handle WHERE ROWID=?",
+        (raw_handle_id,),
+    ).fetchone()
+    if handle_row is None:
+        return {
+            "raw_handle_id": raw_handle_id,
+            "resolution_status": "missing_handle_row",
+        }
+
+    result: dict[str, Any] = {
+        "raw_handle_id": raw_handle_id,
+        "resolved_handle_rowid": int(handle_row[0]),
+        "resolution_status": (
+            "handle_value_null" if handle_row[1] is None else "resolved"
+        ),
+    }
+    if handle_row[1] is not None:
+        result["handle"] = str(handle_row[1])
+    return result
+
+
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as stream:
@@ -140,6 +204,7 @@ def _validate_relation_provenance(
     snapshot_path: Path,
 ) -> dict[str, Any]:
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    sender_enabled = _sender_provenance_enabled(manifest)
     outputs = manifest.get("outputs") or {}
     messages = _load_jsonl(bundle_dir / str(outputs.get("messages") or "messages.jsonl"))
     errors = _load_jsonl(bundle_dir / str(outputs.get("errors") or "errors.jsonl"))
@@ -150,14 +215,21 @@ def _validate_relation_provenance(
         and item.get("scope") in (None, "message")
     }
 
-    failures: list[dict[str, Any]] = []
+    relation_failures: list[dict[str, Any]] = []
+    sender_failures: list[dict[str, Any]] = []
     actual_relations = 0
     expected_participant_relation_rows = 0
     unresolved_chat_relations = 0
     unresolved_participant_relations = 0
+    sender_handle_ids_present = 0
+    sender_handle_ids_resolved = 0
+    sender_handle_ids_unresolved = 0
+    sender_handle_ids_null = 0
+    sender_handle_id_column_missing = 0
 
     with _readonly(snapshot_path) as conn:
         tables = _tables(conn)
+        message_columns = _columns(conn, "message")
         message_ids = {str(row[0]) for row in conn.execute("SELECT ROWID FROM message")}
         expected_pairs: set[tuple[str, int]] = set()
         if "chat_message_join" in tables:
@@ -189,12 +261,64 @@ def _validate_relation_provenance(
             for item in value["participant_relations"]
         )
 
+        expected_sender_by_message: dict[str, dict[str, Any]] = {}
+        if sender_enabled:
+            expected_sender_by_message = {
+                message_id: _expected_sender_provenance(
+                    conn, message_id, message_columns, tables
+                )
+                for message_id in message_ids
+            }
+            for expected in expected_sender_by_message.values():
+                status = expected["resolution_status"]
+                raw_handle_id = expected.get("raw_handle_id")
+                if status == "handle_id_column_missing":
+                    sender_handle_id_column_missing += 1
+                elif raw_handle_id is None:
+                    sender_handle_ids_null += 1
+                else:
+                    sender_handle_ids_present += 1
+                    if status == "resolved":
+                        sender_handle_ids_resolved += 1
+                    else:
+                        sender_handle_ids_unresolved += 1
+
         actual_pairs: set[tuple[str, int]] = set()
         for record in messages:
             raw_message_id = record.get("source_message_id")
             if raw_message_id is None:
                 continue
             message_id = str(raw_message_id)
+
+            if sender_enabled:
+                expected_sender = expected_sender_by_message.get(message_id)
+                metadata = record.get("metadata")
+                actual_sender = (
+                    metadata.get("_a1_sender_relation")
+                    if isinstance(metadata, dict)
+                    else None
+                )
+                expected_sender_handle = (
+                    expected_sender.get("handle")
+                    if isinstance(expected_sender, dict)
+                    and expected_sender.get("resolution_status") == "resolved"
+                    else None
+                )
+                if (
+                    expected_sender is None
+                    or actual_sender != expected_sender
+                    or record.get("sender_handle") != expected_sender_handle
+                ):
+                    sender_failures.append(
+                        {
+                            "source_message_id": message_id,
+                            "expected": expected_sender,
+                            "actual": actual_sender,
+                            "expected_sender_handle": expected_sender_handle,
+                            "actual_sender_handle": record.get("sender_handle"),
+                        }
+                    )
+
             for relation in record.get("conversation_sources") or []:
                 if not isinstance(relation, dict):
                     continue
@@ -212,7 +336,7 @@ def _validate_relation_provenance(
                     else None
                 )
                 if expected is None or actual != expected:
-                    failures.append(
+                    relation_failures.append(
                         {
                             "source_message_id": message_id,
                             "raw_chat_rowid": chat_id,
@@ -226,7 +350,7 @@ def _validate_relation_provenance(
         }
         missing_pairs = sorted(required_pairs - actual_pairs)
         for message_id, chat_id in missing_pairs:
-            failures.append(
+            relation_failures.append(
                 {
                     "source_message_id": message_id,
                     "raw_chat_rowid": chat_id,
@@ -237,41 +361,65 @@ def _validate_relation_provenance(
             )
 
     return {
-        "ok": not failures,
-        "failures": failures,
+        "relation_ok": not relation_failures,
+        "relation_failures": relation_failures,
+        "sender_enabled": sender_enabled,
+        "sender_ok": not sender_failures,
+        "sender_failures": sender_failures,
         "counts": {
             "source_relation_provenance_relations": actual_relations,
             "source_relevant_chat_handle_link_rows": expected_participant_relation_rows,
             "source_unresolved_chat_references": unresolved_chat_relations,
             "source_unresolved_participant_relations": unresolved_participant_relations,
+            "source_sender_handle_ids_present": sender_handle_ids_present,
+            "source_sender_handle_ids_resolved": sender_handle_ids_resolved,
+            "source_sender_handle_ids_unresolved": sender_handle_ids_unresolved,
+            "source_sender_handle_ids_null": sender_handle_ids_null,
+            "source_sender_handle_id_column_missing": sender_handle_id_column_missing,
         },
     }
 
 
+def _mark_failed(base: dict[str, Any], check_name: str) -> None:
+    failed = base.setdefault("failed_checks", [])
+    if isinstance(failed, list) and check_name not in failed:
+        failed.append(check_name)
+    base["ok"] = False
+    base["status"] = "failed"
+
+
 def _augment_base_report(
     base: dict[str, Any],
-    relation: dict[str, Any],
+    validation: dict[str, Any],
 ) -> dict[str, Any]:
     raw_counts = base.setdefault("raw_counts", {})
     if isinstance(raw_counts, dict):
-        raw_counts.update(relation["counts"])
+        raw_counts.update(validation["counts"])
 
     checks = base.setdefault("checks", {})
+    relation_check = "source_relation_provenance_matches_snapshot"
     if isinstance(checks, dict):
-        checks["source_relation_provenance_matches_snapshot"] = bool(relation["ok"])
+        checks[relation_check] = bool(validation["relation_ok"])
 
     base["relation_provenance"] = {
-        "ok": bool(relation["ok"]),
-        "failure_count": len(relation["failures"]),
-        "failures": relation["failures"],
+        "ok": bool(validation["relation_ok"]),
+        "failure_count": len(validation["relation_failures"]),
+        "failures": validation["relation_failures"],
     }
+    if not validation["relation_ok"]:
+        _mark_failed(base, relation_check)
 
-    if not relation["ok"]:
-        failed = base.setdefault("failed_checks", [])
-        if isinstance(failed, list) and "source_relation_provenance_matches_snapshot" not in failed:
-            failed.append("source_relation_provenance_matches_snapshot")
-        base["ok"] = False
-        base["status"] = "failed"
+    if validation["sender_enabled"]:
+        sender_check = "source_sender_provenance_matches_snapshot"
+        if isinstance(checks, dict):
+            checks[sender_check] = bool(validation["sender_ok"])
+        base["sender_provenance"] = {
+            "ok": bool(validation["sender_ok"]),
+            "failure_count": len(validation["sender_failures"]),
+            "failures": validation["sender_failures"],
+        }
+        if not validation["sender_ok"]:
+            _mark_failed(base, sender_check)
     return base
 
 
@@ -281,7 +429,7 @@ def reconcile_bundle(
     *,
     sqlite_snapshot_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Run authoritative A1 reconciliation plus iMessage relation provenance checks."""
+    """Run authoritative A1 reconciliation plus iMessage provenance checks."""
 
     bundle_dir = bundle_dir.resolve()
     source_path = source_path.resolve()
