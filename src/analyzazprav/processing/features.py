@@ -24,16 +24,28 @@ def _calendar_parts(message: CanonicalMessage) -> tuple[int | None, ...]:
     return utc_parts + local_parts
 
 
-def build_features(grouped: dict[int, list[CanonicalMessage]]) -> dict[int, MessageFeatures]:
-    """Build membership-scoped features; the same canonical message may appear in multiple chats."""
+def build_features(
+    grouped: dict[int, list[CanonicalMessage]],
+    *,
+    resolved_sender_map: dict[int, int] | None = None,
+) -> dict[int, MessageFeatures]:
+    """Build membership-scoped features using resolved people for opposite-sender timing."""
 
     result: dict[int, MessageFeatures] = {}
+    resolved_sender_map = resolved_sender_map or {}
+
+    def sender_key(message: CanonicalMessage) -> int | None:
+        if message.sender_id is None:
+            return None
+        return resolved_sender_map.get(message.sender_id, message.sender_id)
+
     for conversation_id in sorted(grouped):
         previous: CanonicalMessage | None = None
         last_by_sender: dict[int | None, CanonicalMessage] = {}
         for message in grouped[conversation_id]:
             clean = clean_text(message.text)
-            others = [candidate for sender, candidate in last_by_sender.items() if sender != message.sender_id]
+            current_sender = sender_key(message)
+            others = [candidate for sender, candidate in last_by_sender.items() if sender != current_sender]
             previous_other = max(
                 (candidate for candidate in others if candidate.timestamp_us is not None),
                 key=lambda candidate: candidate.timestamp_us,
@@ -70,5 +82,5 @@ def build_features(grouped: dict[int, list[CanonicalMessage]]) -> dict[int, Mess
                 local_weekday=calendar[8], local_hour=calendar[9],
             )
             previous = message
-            last_by_sender[message.sender_id] = message
+            last_by_sender[current_sender] = message
     return result
