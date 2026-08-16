@@ -20,6 +20,41 @@ def _object_exists(conn: sqlite3.Connection, name: str, object_type: str) -> boo
     )
 
 
+def _latest_completed_processing_run_id(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT id FROM processing_run WHERE status='completed' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("A4 requires a completed A3 processing_run")
+    return int(row[0])
+
+
+def _latest_analysis_states_with_processing_run(
+    conn: sqlite3.Connection,
+) -> dict[int, tuple[str, str, int]]:
+    """Return latest A4 source/signature state with its exact A3 provenance run."""
+
+    try:
+        rows = conn.execute(
+            """SELECT s.conversation_id,
+                      s.source_fingerprint,
+                      s.analysis_signature,
+                      ar.processing_run_id
+               FROM analytics_conversation_state_v6 AS s
+               JOIN analysis_a4_latest_conversation_run AS latest
+                 ON latest.conversation_id=s.conversation_id
+                AND latest.analytics_run_id=s.analytics_run_id
+               JOIN analytics_run AS ar ON ar.id=s.analytics_run_id"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {
+        int(row[0]): (str(row[1]), str(row[2]), int(row[3]))
+        for row in rows
+        if row[1] is not None and row[2] is not None and row[3] is not None
+    }
+
+
 def _resolve_participants(
     conn: sqlite3.Connection, messages: list[AnalyticMessage]
 ) -> list[AnalyticMessage]:
@@ -146,10 +181,13 @@ def analyze_incremental_database(
     config: AnalyticsConfig | None = None,
     conversation_ids: Iterable[int] | None = None,
 ) -> list[ConversationAnalytics]:
+    """Recompute conversations when data, rules, or A3 provenance changed."""
+
     cfg = config or AnalyticsConfig()
     grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
-    previous = _membership_adapter._latest_analysis_states(conn)
+    previous = _latest_analysis_states_with_processing_run(conn)
     expected_signature = analysis_signature(cfg)
+    current_processing_run_id = _latest_completed_processing_run_id(conn)
 
     changed: dict[int, list[AnalyticMessage]] = {}
     for conversation_id, source in grouped.items():
@@ -157,6 +195,7 @@ def analyze_incremental_database(
         if previous.get(conversation_id) != (
             current_source_fingerprint,
             expected_signature,
+            current_processing_run_id,
         ):
             changed[conversation_id] = source
     return _analyze_grouped(changed, cfg)
