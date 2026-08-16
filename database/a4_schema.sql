@@ -9,8 +9,7 @@ CREATE TABLE IF NOT EXISTS analytics_run (
     status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
     config_json TEXT NOT NULL DEFAULT '{}',
     conversation_count INTEGER NOT NULL DEFAULT 0,
-    input_message_count INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(id, processing_run_id)
+    input_message_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS analytics_conversation_summary (
@@ -61,8 +60,7 @@ CREATE TABLE IF NOT EXISTS analytics_participant_summary (
 
 CREATE TABLE IF NOT EXISTS analytics_response_latency (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL,
-    processing_run_id INTEGER NOT NULL,
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     session_id INTEGER NOT NULL,
     from_participant_id INTEGER NOT NULL REFERENCES participant(id),
@@ -70,11 +68,7 @@ CREATE TABLE IF NOT EXISTS analytics_response_latency (
     previous_turn_id INTEGER NOT NULL,
     response_turn_id INTEGER NOT NULL,
     latency_seconds REAL CHECK(latency_seconds IS NULL OR latency_seconds >= 0),
-    response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0),
-    FOREIGN KEY(analytics_run_id, processing_run_id)
-        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
-    FOREIGN KEY(processing_run_id, session_id)
-        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE
+    response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS analytics_time_bucket (
@@ -94,8 +88,7 @@ CREATE TABLE IF NOT EXISTS analytics_time_bucket (
 
 CREATE TABLE IF NOT EXISTS analytics_silence_event (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL,
-    processing_run_id INTEGER NOT NULL,
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     previous_session_id INTEGER NOT NULL,
     next_session_id INTEGER NOT NULL,
@@ -104,13 +97,7 @@ CREATE TABLE IF NOT EXISTS analytics_silence_event (
     return_turn_id INTEGER NOT NULL,
     before_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
     return_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
-    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
-    FOREIGN KEY(analytics_run_id, processing_run_id)
-        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
-    FOREIGN KEY(processing_run_id, previous_session_id)
-        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE,
-    FOREIGN KEY(processing_run_id, next_session_id)
-        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS analytics_daily_participant (
@@ -201,8 +188,7 @@ CREATE TABLE IF NOT EXISTS analytics_change_point (
 
 CREATE TABLE IF NOT EXISTS analytics_event (
     id INTEGER PRIMARY KEY,
-    analytics_run_id INTEGER NOT NULL,
-    processing_run_id INTEGER NOT NULL,
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     session_id INTEGER,
     event_type TEXT NOT NULL,
@@ -210,12 +196,57 @@ CREATE TABLE IF NOT EXISTS analytics_event (
     start_at_utc_us INTEGER,
     end_at_utc_us INTEGER,
     factors_json TEXT NOT NULL DEFAULT '{}',
-    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
-    FOREIGN KEY(analytics_run_id, processing_run_id)
-        REFERENCES analytics_run(id, processing_run_id) ON DELETE CASCADE,
-    FOREIGN KEY(processing_run_id, session_id)
-        REFERENCES conversation_session(processing_run_id, id) ON DELETE SET NULL
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
 );
+
+-- Session ids are scoped to an A3 processing run. A4 keeps that run normalized
+-- in analytics_run and validates every stored session reference against it.
+CREATE TRIGGER IF NOT EXISTS a4_validate_response_session
+BEFORE INSERT ON analytics_response_latency
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM analytics_run ar
+        JOIN conversation_session cs
+          ON cs.processing_run_id = ar.processing_run_id
+         AND cs.id = NEW.session_id
+         AND cs.conversation_id = NEW.conversation_id
+        WHERE ar.id = NEW.analytics_run_id
+    ) THEN RAISE(ABORT, 'A4 response session provenance mismatch') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS a4_validate_silence_sessions
+BEFORE INSERT ON analytics_silence_event
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM analytics_run ar
+        JOIN conversation_session previous
+          ON previous.processing_run_id = ar.processing_run_id
+         AND previous.id = NEW.previous_session_id
+         AND previous.conversation_id = NEW.conversation_id
+        JOIN conversation_session next
+          ON next.processing_run_id = ar.processing_run_id
+         AND next.id = NEW.next_session_id
+         AND next.conversation_id = NEW.conversation_id
+        WHERE ar.id = NEW.analytics_run_id
+    ) THEN RAISE(ABORT, 'A4 silence session provenance mismatch') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS a4_validate_event_session
+BEFORE INSERT ON analytics_event
+WHEN NEW.session_id IS NOT NULL
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM analytics_run ar
+        JOIN conversation_session cs
+          ON cs.processing_run_id = ar.processing_run_id
+         AND cs.id = NEW.session_id
+         AND cs.conversation_id = NEW.conversation_id
+        WHERE ar.id = NEW.analytics_run_id
+    ) THEN RAISE(ABORT, 'A4 event session provenance mismatch') END;
+END;
 
 CREATE INDEX IF NOT EXISTS idx_a4_participant_conversation
     ON analytics_participant_summary(conversation_id, participant_id, analytics_run_id);
