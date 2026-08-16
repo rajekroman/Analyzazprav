@@ -7,14 +7,18 @@ CREATE TABLE IF NOT EXISTS processing_run (
     finished_at_utc_us INTEGER,
     status TEXT NOT NULL CHECK(status IN ('running','completed','failed')),
     config_json TEXT NOT NULL DEFAULT '{}',
-    input_message_count INTEGER NOT NULL DEFAULT 0,
-    output_message_count INTEGER NOT NULL DEFAULT 0
+    input_membership_count INTEGER NOT NULL DEFAULT 0,
+    canonical_message_count INTEGER NOT NULL DEFAULT 0,
+    output_membership_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sender_run (
-    id INTEGER PRIMARY KEY,
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     sender_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
+    first_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
+    last_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
     first_message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
     last_message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
     start_at_utc_us INTEGER,
@@ -22,12 +26,15 @@ CREATE TABLE IF NOT EXISTS sender_run (
     message_count INTEGER NOT NULL,
     char_count INTEGER NOT NULL,
     method TEXT NOT NULL,
-    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id)
+    PRIMARY KEY(processing_run_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS conversation_session (
-    id INTEGER PRIMARY KEY,
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    first_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
+    last_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
     first_message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
     last_message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
     start_at_utc_us INTEGER,
@@ -35,33 +42,42 @@ CREATE TABLE IF NOT EXISTS conversation_session (
     message_count INTEGER NOT NULL,
     gap_threshold_us INTEGER NOT NULL,
     method TEXT NOT NULL,
-    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id)
+    PRIMARY KEY(processing_run_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS conversation_thread (
-    id INTEGER PRIMARY KEY,
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
-    session_id INTEGER REFERENCES conversation_session(id) ON DELETE CASCADE,
+    session_id INTEGER,
     method TEXT NOT NULL,
     confidence REAL NOT NULL,
-    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id)
+    PRIMARY KEY(processing_run_id, id),
+    FOREIGN KEY(processing_run_id, session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS conversation_thread_message (
-    thread_id INTEGER NOT NULL REFERENCES conversation_thread(id) ON DELETE CASCADE,
+    processing_run_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL,
+    membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
     message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
     position INTEGER NOT NULL,
-    PRIMARY KEY(thread_id, message_id)
+    PRIMARY KEY(processing_run_id, thread_id, membership_id),
+    FOREIGN KEY(processing_run_id, thread_id)
+        REFERENCES conversation_thread(processing_run_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS processed_message (
-    message_id INTEGER PRIMARY KEY REFERENCES message(id) ON DELETE CASCADE,
-    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id),
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
+    message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     sequence_number INTEGER NOT NULL,
     text_clean TEXT,
-    sender_run_id INTEGER NOT NULL REFERENCES sender_run(id),
-    session_id INTEGER NOT NULL REFERENCES conversation_session(id),
-    thread_id INTEGER REFERENCES conversation_thread(id),
+    sender_run_id INTEGER NOT NULL,
+    session_id INTEGER NOT NULL,
+    thread_id INTEGER,
     char_count INTEGER NOT NULL,
     word_count INTEGER NOT NULL,
     line_count INTEGER NOT NULL,
@@ -91,7 +107,15 @@ CREATE TABLE IF NOT EXISTS processed_message (
     local_month INTEGER,
     local_day INTEGER,
     local_weekday INTEGER,
-    local_hour INTEGER
+    local_hour INTEGER,
+    PRIMARY KEY(processing_run_id, membership_id),
+    UNIQUE(processing_run_id, conversation_id, sequence_number),
+    FOREIGN KEY(processing_run_id, sender_run_id)
+        REFERENCES sender_run(processing_run_id, id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, session_id)
+        REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE,
+    FOREIGN KEY(processing_run_id, thread_id)
+        REFERENCES conversation_thread(processing_run_id, id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
@@ -101,14 +125,33 @@ CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
     classification TEXT NOT NULL,
     confidence REAL NOT NULL,
     method TEXT NOT NULL,
-    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id),
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
     CHECK(message_id_a < message_id_b),
     UNIQUE(message_id_a, message_id_b, classification, processing_run_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_processed_message_session ON processed_message(session_id);
-CREATE INDEX IF NOT EXISTS idx_processed_message_thread ON processed_message(thread_id);
-CREATE INDEX IF NOT EXISTS idx_processed_message_utc_period ON processed_message(utc_year, utc_month, utc_day);
-CREATE INDEX IF NOT EXISTS idx_processed_message_local_period ON processed_message(local_year, local_month, local_day);
-CREATE INDEX IF NOT EXISTS idx_sender_run_conversation ON sender_run(conversation_id, id);
-CREATE INDEX IF NOT EXISTS idx_session_conversation ON conversation_session(conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_membership
+ON processed_message(membership_id, processing_run_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_conversation
+ON processed_message(processing_run_id, conversation_id, sequence_number);
+CREATE INDEX IF NOT EXISTS idx_processed_message_session
+ON processed_message(processing_run_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_thread
+ON processed_message(processing_run_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_utc_period
+ON processed_message(processing_run_id, utc_year, utc_month, utc_day);
+CREATE INDEX IF NOT EXISTS idx_processed_message_local_period
+ON processed_message(processing_run_id, local_year, local_month, local_day);
+CREATE INDEX IF NOT EXISTS idx_sender_run_conversation
+ON sender_run(processing_run_id, conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_session_conversation
+ON conversation_session(processing_run_id, conversation_id, id);
+
+CREATE VIEW IF NOT EXISTS analysis_processed_messages_latest AS
+SELECT pm.*
+FROM processed_message pm
+JOIN (
+    SELECT MAX(id) AS processing_run_id
+    FROM processing_run
+    WHERE status='completed'
+) latest ON latest.processing_run_id = pm.processing_run_id;
