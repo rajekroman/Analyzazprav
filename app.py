@@ -24,6 +24,7 @@ from a6.data import (
 from a6.findings import empty_findings, filter_findings, load_a4_findings, resolve_evidence
 from a6.metrics import A4ConversationMetrics, empty_a4_metrics, load_a4_conversation_metrics
 from a6.provenance import empty_provenance, load_message_sources
+from a6.topics import A4Topics, empty_topics, load_a4_topics
 
 st.set_page_config(page_title="Analýza zpráv", page_icon="💬", layout="wide")
 
@@ -38,6 +39,11 @@ def load_db(path: str):
 @st.cache_data(show_spinner=False)
 def load_a4_metrics(path: str, conversation_id: str) -> A4ConversationMetrics:
     return load_a4_conversation_metrics(path, conversation_id)
+
+
+@st.cache_data(show_spinner=False)
+def load_topics(path: str, conversation_id: str) -> A4Topics:
+    return load_a4_topics(path, conversation_id)
 
 
 def source():
@@ -133,6 +139,7 @@ def select_conversation(frame: pd.DataFrame) -> tuple[str, pd.DataFrame]:
         st.session_state.a6_conversation_id = conversation_id
         st.session_state.a6_manual_selected = []
         st.session_state.a6_finding_selected = []
+        st.session_state.a6_topic_selected = []
         st.session_state.a6_selection_source = "manual"
         st.session_state.pop("a6_last_execution", None)
         st.session_state.pop("a6_last_analysis_selection", None)
@@ -267,6 +274,8 @@ def active_selection() -> tuple[list[str], str]:
     source_name = st.session_state.get("a6_selection_source", "manual")
     if source_name == "finding":
         return list(st.session_state.get("a6_finding_selected", [])), "A4 nález"
+    if source_name == "topic":
+        return list(st.session_state.get("a6_topic_selected", [])), "A4 lexikální téma"
     return list(st.session_state.get("a6_manual_selected", [])), "ruční výběr"
 
 
@@ -376,6 +385,69 @@ def significant_periods(
         st.session_state.a6_finding_selected = evidence_ids
         st.session_state.a6_selection_source = "finding"
         st.success("Evidence nálezu byla nastavena jako aktivní výběr pro A5.")
+
+
+def lexical_topics(topics: A4Topics, conversation_frame: pd.DataFrame, db_path: str | None) -> None:
+    if not topics.available:
+        st.info("Pro tuto konverzaci nejsou publikovaná A4 lexikální témata.")
+        return
+
+    st.caption(
+        "A4 lexical_ngram_v1 je auditovatelná lexikální evidence. "
+        "Fráze a salience nejsou samy o sobě sémantickou ani psychologickou interpretací."
+    )
+    table_columns = [column for column in (
+        "topic_key", "method", "normalized_phrase", "ngram_size", "document_frequency",
+        "document_frequency_ratio", "occurrence_count", "participant_count", "salience",
+        "first_period_date", "last_period_date",
+    ) if column in topics.topics]
+    st.dataframe(
+        topics.topics[table_columns].sort_values("salience", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    options: dict[str, str] = {}
+    for row in topics.topics.sort_values("salience", ascending=False).itertuples(index=False):
+        label = f"{row.normalized_phrase} · {row.method} · salience {float(row.salience):.3f}"
+        options[label] = str(row.topic_key)
+    chosen_label = st.selectbox("Lexikální téma", list(options), key="a6-topic-select")
+    topic_key = options[chosen_label]
+    topic = topics.topics[topics.topics.topic_key == topic_key].iloc[0]
+
+    evidence_rows = topics.evidence[topics.evidence.topic_key == topic_key].copy()
+    evidence_ids = list(topic.evidence_message_ids)
+    st.markdown(f"**Exact topic evidence — {len(evidence_ids)} zpráv**")
+    if not evidence_rows.empty:
+        evidence_columns = [column for column in (
+            "message_id", "participant_id", "period_date", "date_basis", "occurrence_count",
+        ) if column in evidence_rows]
+        st.dataframe(evidence_rows[evidence_columns], use_container_width=True, hide_index=True)
+
+    evidence, missing = resolve_evidence(conversation_frame, evidence_ids)
+    if missing:
+        st.error("A4 topic evidence obsahuje message_id mimo aktuální canonical konverzaci: " + ", ".join(missing))
+    if not evidence.empty:
+        render_message_evidence(evidence, provenance_for(db_path, evidence_ids), db_path)
+
+    if not topics.periods.empty:
+        period_rows = topics.periods[topics.periods.topic_key == topic_key]
+        if not period_rows.empty:
+            st.markdown("**Sparse period projection**")
+            period_columns = [column for column in (
+                "participant_id", "date_basis", "period_kind", "period_start", "period_end",
+                "topic_message_count", "occurrence_count", "participant_period_message_count", "topic_message_share",
+            ) if column in period_rows]
+            st.dataframe(period_rows[period_columns], use_container_width=True, hide_index=True)
+            st.caption("Chybějící období nejsou implicitně interpretována; view je záměrně sparse.")
+
+    if not evidence.empty and st.button(
+        "Použít evidence tohoto lexikálního tématu pro AI analýzu",
+        key=f"use-topic-{topic_key}",
+    ):
+        st.session_state.a6_topic_selected = list(evidence.message_id.astype(str))
+        st.session_state.a6_selection_source = "topic"
+        st.success("Exact topic evidence byla nastavena jako aktivní výběr pro A5.")
 
 
 def render_result_evidence(message_ids: list[str], conversation_frame: pd.DataFrame, db_path: str | None) -> None:
@@ -506,7 +578,12 @@ def main():
 
     contact, conversation_frame = select_conversation(frame)
     conversation_id = str(conversation_frame.iloc[0].conversation_id)
-    a4_metrics = load_a4_metrics(db_path, conversation_id) if db_path else empty_a4_metrics()
+    try:
+        a4_metrics = load_a4_metrics(db_path, conversation_id) if db_path else empty_a4_metrics()
+        a4_topics = load_topics(db_path, conversation_id) if db_path else empty_topics()
+    except DataSourceError as exc:
+        st.error(str(exc))
+        st.stop()
 
     known_times = conversation_frame.timestamp.dropna()
     unknown_time_count = int(conversation_frame.timestamp.isna().sum())
@@ -567,12 +644,21 @@ def main():
 
     st.caption(
         f"Kontakt: {contact} · conversation_id: `{conversation_id}` · "
-        f"analytické metriky: {'A4 latest-run' if a4_metrics.available else 'A6 explicitně označený fallback'}"
+        f"analytické metriky: {'A4 latest-run' if a4_metrics.available else 'A6 explicitně označený fallback'} · "
+        f"lexikální témata A4: {len(a4_topics.topics) if a4_topics.available else 0}"
     )
     if a4_metrics.available and not full_period:
         st.caption("Souhrnný medián odpovědi pro zúžené období se neagreguje z mediánů; denní A4 latency zůstává v grafech.")
 
-    tabs = st.tabs(["Konverzace", "Časová osa", "Grafy", "Významná období", "Vybrané zprávy", "Analýza"])
+    tabs = st.tabs([
+        "Konverzace",
+        "Časová osa",
+        "Grafy",
+        "Významná období",
+        "Lexikální témata",
+        "Vybrané zprávy",
+        "Analýza",
+    ])
     with tabs[0]:
         conversation(filtered)
     with tabs[1]:
@@ -581,9 +667,11 @@ def main():
         charts(filtered, a4_metrics, period_start, period_end) if not filtered.empty else st.info("Bez dat.")
     with tabs[3]:
         significant_periods(findings, conversation_frame, period_start, period_end, db_path)
+    with tabs[4]:
+        lexical_topics(a4_topics, conversation_frame, db_path)
 
     selected, selection_source = active_selection()
-    with tabs[4]:
+    with tabs[5]:
         st.caption(f"Aktivní zdroj výběru: {selection_source}")
         chosen, missing = resolve_evidence(conversation_frame, selected)
         if missing:
@@ -593,7 +681,7 @@ def main():
         else:
             render_message_evidence(chosen, provenance_for(db_path, list(chosen.message_id.astype(str))), db_path)
 
-    with tabs[5]:
+    with tabs[6]:
         selected, selection_source = active_selection()
         st.write("A6 neposílá celý archiv do AI. Připraví pouze explicitně vybranou evidence a omezený okolní kontext pro A5.")
         st.caption(f"Aktivní zdroj výběru: {selection_source}")
@@ -645,7 +733,7 @@ def main():
                     elif last_execution:
                         st.info("Poslední A5 výsledek patří k jinému výběru zpráv a proto se zde nezobrazuje.")
         else:
-            st.info("Vyberte zprávy ručně nebo použijte evidence některého A4 nálezu.")
+            st.info("Vyberte zprávy ručně nebo použijte evidence některého A4 nálezu či lexikálního tématu.")
 
 
 if __name__ == "__main__":
