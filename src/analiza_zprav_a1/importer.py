@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .apple_event_metadata import project_apple_event_metadata
+from .attachment_reconciliation import reconcile_bundle, write_reconciliation
 from .attachments import resolve_attachments
 from .csv_mapping import CSVMappingProfile
 from .hashing import sha256_file, stable_message_key
@@ -15,13 +16,12 @@ from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
-from .relation_reconciliation import reconcile_bundle, write_reconciliation
 from .sqlite_schema import inventory_sqlite_schema, write_schema_inventory
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.9.0"
+IMESSAGE_PARSER_VERSION = "0.10.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
