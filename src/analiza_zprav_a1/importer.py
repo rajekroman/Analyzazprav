@@ -17,14 +17,14 @@ from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.5.0"
+IMESSAGE_PARSER_VERSION = "0.4.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
-IMAZING_PARSER_VERSION = "0.2.0"
+IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
 GENERIC_JSON_PARSER_NAME = "generic-message-json"
-GENERIC_STRUCTURED_PARSER_VERSION = "0.2.0"
+GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
 GENERIC_TEXT_PARSER_NAME = "generic-message-text"
-GENERIC_TEXT_PARSER_VERSION = "0.2.0"
+GENERIC_TEXT_PARSER_VERSION = "0.1.0"
 
 
 @dataclass(slots=True)
