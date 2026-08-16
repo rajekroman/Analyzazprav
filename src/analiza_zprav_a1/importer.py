@@ -9,6 +9,7 @@ from .attachments import resolve_attachments
 from .hashing import sha256_file, stable_message_key
 from .models import MessageRecord
 from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
+from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
 
@@ -20,6 +21,8 @@ IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
 GENERIC_JSON_PARSER_NAME = "generic-message-json"
 GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
+GENERIC_TEXT_PARSER_NAME = "generic-message-text"
+GENERIC_TEXT_PARSER_VERSION = "0.1.0"
 
 
 @dataclass(slots=True)
@@ -196,4 +199,17 @@ def import_generic_json(json_path: Path, output_dir: Path, attachments_root: Pat
         parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
         output_dir=output_dir,
         attachments_root=attachments_root,
+    )
+
+
+def import_generic_text(txt_path: Path, output_dir: Path, mode: TextMode) -> ImportStats:
+    if not txt_path.is_file():
+        raise FileNotFoundError(txt_path)
+    return _write_records(
+        GenericTextParser(txt_path, mode).iter_messages(),
+        source_path=txt_path,
+        source_type="generic_message_text",
+        parser_name=GENERIC_TEXT_PARSER_NAME,
+        parser_version=GENERIC_TEXT_PARSER_VERSION,
+        output_dir=output_dir,
     )
