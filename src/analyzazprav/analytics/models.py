@@ -22,6 +22,10 @@ class AnalyticMessage:
     has_attachment: bool = False
     utc_date: str | None = None
     local_date: str | None = None
+    utc_weekday: int | None = None
+    utc_hour: int | None = None
+    local_weekday: int | None = None
+    local_hour: int | None = None
 
     @property
     def period_date(self) -> str | None:
@@ -73,6 +77,30 @@ class ConflictCandidate:
     start_us: int | None
     end_us: int | None
     factors: dict[str, float]
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SilenceEvent:
+    conversation_id: int
+    previous_session_id: int
+    next_session_id: int
+    gap_seconds: float
+    previous_turn_id: int
+    return_turn_id: int
+    before_participant_id: int | None
+    return_participant_id: int | None
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TimeBucketMetric:
+    conversation_id: int
+    participant_id: int
+    time_basis: str
+    bucket_kind: str
+    bucket_value: str
+    message_count: int
     source_message_ids: tuple[int, ...]
 
 
@@ -166,6 +194,8 @@ class ConversationAnalytics:
     reciprocity: dict[str, float | None] = field(default_factory=dict)
     response_samples: list[ResponseSample] = field(default_factory=list)
     conflicts: list[ConflictCandidate] = field(default_factory=list)
+    silence_events: list[SilenceEvent] = field(default_factory=list)
+    time_buckets: list[TimeBucketMetric] = field(default_factory=list)
     daily_metrics: list[DailyParticipantMetric] = field(default_factory=list)
     change_points: list[ChangePoint] = field(default_factory=list)
     period_metrics: list[PeriodParticipantMetric] = field(default_factory=list)
