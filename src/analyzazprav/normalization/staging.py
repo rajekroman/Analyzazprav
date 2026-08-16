@@ -303,9 +303,13 @@ def ingest_a1_staging_bundle(
             if not source_message_id or not source_record_key:
                 raise ValueError("A1 message requires source_message_id and source_record_key")
 
-            is_from_me = bool(record.get("is_from_me"))
+            raw_is_from_me = record.get("is_from_me")
+            if raw_is_from_me is not None and not isinstance(raw_is_from_me, bool):
+                raise ValueError("A1 is_from_me must be a boolean or null")
+            is_from_me: bool | None = raw_is_from_me
+
             sender_handle = record.get("sender_handle")
-            if is_from_me:
+            if is_from_me is True:
                 sender_id = db.get_or_create_participant(
                     identity_type="self",
                     identity_value="local",
@@ -363,6 +367,7 @@ def ingest_a1_staging_bundle(
                     "a1_text_source": record.get("text_source"),
                     "a1_source_timestamp_precision": source_precision,
                     "a1_source_sha256": source_sha256,
+                    "a1_is_from_me": is_from_me,
                 }
             )
 
@@ -372,6 +377,13 @@ def ingest_a1_staging_bundle(
             text = record.get("text")
             message_type = "attachment" if text is None and attachments else "text"
             canonical_guid = record.get("source_guid")
+            direction = (
+                "outgoing"
+                if is_from_me is True
+                else "incoming"
+                if is_from_me is False
+                else "unknown"
+            )
             message_id = db.insert_message(
                 MessageInput(
                     import_run_id=run.id,
@@ -379,7 +391,7 @@ def ingest_a1_staging_bundle(
                     conversation_id=primary_conversation_id,
                     sender_id=sender_id,
                     sent_at_utc_us=sent_at_utc_us,
-                    direction="outgoing" if is_from_me else "incoming",
+                    direction=direction,
                     message_type=message_type,
                     text=None if text is None else str(text),
                     service=None if service is None else str(service),
