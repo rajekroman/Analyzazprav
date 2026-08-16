@@ -181,14 +181,14 @@ def test_a5_reads_real_reconciled_a4_v9_change_point(tmp_path: Path) -> None:
         candidate
         for candidate in candidates
         if candidate.metadata.get("metric") == "message_count"
-        and candidate.metadata.get("participant_id") == str(alice)
+        and candidate.metadata.get("participant_id") == alice
     ]
     assert message_count_candidates, candidates
     candidate = message_count_candidates[-1]
     assert candidate.candidate_type == "change_point"
-    assert candidate.detected_signals == ("change_point", "increasing")
+    assert candidate.detected_signals == ("message_count:increasing",)
     assert candidate.metrics_during["value"] == 6.0
-    assert candidate.metrics_before["baseline_median"] == 1.0
+    assert candidate.metrics_during["baseline_median"] == 1.0
     assert set(candidate.evidence_message_ids) == {
         str(message_id) for message_id in departure_message_ids
     }
