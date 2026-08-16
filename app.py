@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from a6.a5_bridge import A5Unavailable, a5_available, run_local_a5
+from a6.attachments import empty_attachments, load_message_attachments
 from a6.data import (
     DataSourceError,
     SourceInfo,
@@ -265,12 +266,47 @@ def provenance_for(db_path: str | None, message_ids: list[str]) -> pd.DataFrame:
         return empty_provenance()
 
 
-def render_message_evidence(frame: pd.DataFrame, provenance: pd.DataFrame) -> None:
+def attachments_for(db_path: str | None, message_ids: list[str]) -> pd.DataFrame:
+    if db_path is None or not message_ids:
+        return empty_attachments()
+    try:
+        return load_message_attachments(db_path, message_ids)
+    except DataSourceError as exc:
+        st.error(str(exc))
+        return empty_attachments()
+
+
+def render_message_evidence(
+    frame: pd.DataFrame,
+    provenance: pd.DataFrame,
+    db_path: str | None = None,
+) -> None:
+    attachments = attachments_for(db_path, list(frame.message_id.astype(str)))
     for row in frame.itertuples(index=False):
         with st.container(border=True):
             st.markdown(f"**{row.sender}** · {row.timestamp:%Y-%m-%d %H:%M:%S UTC}")
             st.write(row.text or "_Bez textu_")
             st.caption(f"canonical message_id: `{row.message_id}` · conversation_id: `{row.conversation_id}`")
+
+            message_attachments = attachments[attachments.message_id == str(row.message_id)] if not attachments.empty else attachments
+            if not message_attachments.empty:
+                st.markdown("Přílohy")
+                attachment_columns = [
+                    column
+                    for column in (
+                        "attachment_id",
+                        "position",
+                        "mime_type",
+                        "filename",
+                        "size_bytes",
+                        "availability",
+                        "sha256",
+                        "storage_path",
+                    )
+                    if column in message_attachments
+                ]
+                st.dataframe(message_attachments[attachment_columns], use_container_width=True, hide_index=True)
+
             sources = provenance[provenance.message_id == str(row.message_id)] if not provenance.empty else provenance
             if sources.empty:
                 st.caption("Source provenance není pro tuto zprávu v aktuálním zdroji dostupná.")
@@ -331,7 +367,7 @@ def significant_periods(
     evidence_ids = list(evidence.message_id.astype(str))
     st.markdown(f"**Evidence — {len(evidence_ids)} zpráv**")
     provenance = provenance_for(db_path, evidence_ids)
-    render_message_evidence(evidence, provenance)
+    render_message_evidence(evidence, provenance, db_path)
     if st.button("Použít evidence tohoto nálezu pro AI analýzu", key=f"use-{finding.finding_id}"):
         st.session_state.a6_finding_selected = evidence_ids
         st.session_state.a6_selection_source = "finding"
@@ -347,7 +383,11 @@ def render_result_evidence(
     if missing:
         st.error("A5 odkazuje na message_id, které nejsou v aktuálních kanonických datech: " + ", ".join(missing))
     if not evidence.empty:
-        render_message_evidence(evidence, provenance_for(db_path, list(evidence.message_id.astype(str))))
+        render_message_evidence(
+            evidence,
+            provenance_for(db_path, list(evidence.message_id.astype(str))),
+            db_path,
+        )
 
 
 def render_a5_execution(execution: dict, conversation_frame: pd.DataFrame, db_path: str | None) -> None:
@@ -446,10 +486,8 @@ def main():
     )
 
     response_value = None
-    response_source = "fallback"
     full_period = dates[0] == lo and dates[1] == hi
     if a4_metrics.available:
-        response_source = "A4"
         if full_period and not a4_metrics.responses.empty and "latency_seconds" in a4_metrics.responses:
             samples = pd.to_numeric(a4_metrics.responses["latency_seconds"], errors="coerce").dropna()
             response_value = samples.median() if not samples.empty else None
@@ -491,7 +529,11 @@ def main():
         if chosen.empty:
             st.info("Zatím není aktivní žádný výběr zpráv.")
         else:
-            render_message_evidence(chosen, provenance_for(db_path, list(chosen.message_id.astype(str))))
+            render_message_evidence(
+                chosen,
+                provenance_for(db_path, list(chosen.message_id.astype(str))),
+                db_path,
+            )
 
     with tabs[5]:
         selected, selection_source = active_selection()
