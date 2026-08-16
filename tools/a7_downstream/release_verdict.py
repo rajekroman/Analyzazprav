@@ -31,9 +31,10 @@ def apply_contract_provenance(
     """Bind a release verdict to the exact component commits that were tested.
 
     Component reports are produced inside the same workflow run, but the final
-    artifact must still be self-describing. A missing, malformed or different
-    ``contract_sha`` therefore invalidates the release verdict instead of
-    forcing an auditor to infer provenance from workflow YAML or job history.
+    artifact must still be self-describing. A present report with a missing,
+    malformed or different ``contract_sha`` invalidates the release verdict.
+    A wholly absent component report keeps the aggregate's existing
+    ``NEEDS_REVIEW`` semantics instead of being reclassified here.
     """
 
     contracts: dict[str, dict[str, str | None]] = {}
@@ -56,6 +57,8 @@ def apply_contract_provenance(
                     "detail": f"{name} expected contract SHA is not a 40-character git SHA",
                 }
             )
+            continue
+        if component is None:
             continue
         if observed is None:
             provenance_issues.append(
