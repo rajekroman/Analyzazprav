@@ -32,7 +32,7 @@ class A2DatabaseTests(unittest.TestCase):
         row = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()
-        self.assertEqual(row["value"], "1")
+        self.assertEqual(row["value"], "2")
 
     def test_import_is_idempotent_after_completion(self):
         run = self._import("same-file")
