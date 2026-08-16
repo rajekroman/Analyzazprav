@@ -59,6 +59,19 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
                     target_message_id INTEGER NOT NULL,
                     relation_type TEXT NOT NULL
                 );
+                CREATE TABLE a4_reconciliation_fixture (
+                    conversation_id INTEGER,
+                    membership_count_delta INTEGER,
+                    invalid_response_session_count INTEGER,
+                    invalid_silence_session_count INTEGER,
+                    invalid_event_session_count INTEGER,
+                    uses_latest_processing_run INTEGER,
+                    reconciliation_ok INTEGER,
+                    a4_source_membership_count INTEGER,
+                    sender_accounted_membership_count INTEGER
+                );
+                CREATE VIEW analysis_a4_reconciliation AS
+                    SELECT * FROM a4_reconciliation_fixture;
                 CREATE TABLE a4_events_fixture (
                     id INTEGER PRIMARY KEY,
                     conversation_id INTEGER NOT NULL,
@@ -82,8 +95,9 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
                     (3, 11, us(third), "I want to understand and fix it."),
                 ],
             )
+            conn.execute("INSERT INTO message_relation VALUES (1, 3, 2, 'reply')")
             conn.execute(
-                "INSERT INTO message_relation VALUES (1, 3, 2, 'reply')"
+                "INSERT INTO a4_reconciliation_fixture VALUES (7,0,0,0,0,1,1,3,3)"
             )
             conn.execute(
                 "INSERT INTO a4_events_fixture VALUES (1, 7, 4, 'conflict', 0.82, ?, ?, ?, ?)",
@@ -180,9 +194,6 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
             self.assertEqual(result.turning_point_evidence[0].message_ids, ("2", "3"))
             self.assertEqual(result.shared_dynamic_evidence.message_ids, ("1", "2", "3"))
 
-            # Exercise the existing A6 packet contract with exactly the same
-            # canonical IDs used by the A5 evidence chain. This is the handoff
-            # invariant required for UI drill-down.
             packet = {
                 "schema_version": 1,
                 "selected_message_ids": ["2", "3"],
@@ -205,7 +216,11 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
             }
             a6_candidate = candidate_from_a6_packet(packet)
             self.assertEqual(a6_candidate.evidence_message_ids, ("2", "3"))
-            self.assertTrue(set(a6_candidate.evidence_message_ids).issubset(set(result.summary_evidence.message_ids)))
+            self.assertTrue(
+                set(a6_candidate.evidence_message_ids).issubset(
+                    set(result.summary_evidence.message_ids)
+                )
+            )
 
 
 if __name__ == "__main__":
