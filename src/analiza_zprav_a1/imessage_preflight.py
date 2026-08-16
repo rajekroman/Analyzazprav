@@ -101,7 +101,8 @@ def validate_imessage_snapshot(path: Path) -> dict[str, Any]:
             issues.append("chat_handle_join is present but required table 'handle' is missing")
 
         if (
-            "attachment" in tables
+            "message_attachment_join" in tables
+            and "attachment" in tables
             and ATTACHMENT_RELATION_PAYLOAD_KEY in table_columns["attachment"]
         ):
             issues.append(
