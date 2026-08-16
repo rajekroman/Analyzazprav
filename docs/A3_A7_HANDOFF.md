@@ -1,132 +1,199 @@
 # A3 → A7 QA handoff
 
-Authoritative A3 branch: `agent/a3-processing-classification`
-
-A7 must validate A3 as a deterministic derived-data layer over the current A2 canonical SQLite contract. A3 must not be accepted based only on unit tests; the checks below are release-blocking invariants.
+A7 must validate A3 as a deterministic L2 derived-data layer over the canonical A1+A2 `main` contract. A3 is not accepted merely because isolated processing unit tests pass; the checks below are release-blocking invariants.
 
 ## 1. Data preservation
 
-- Record counts and source content in A2 `message`, `message_source`, `attachment`, `message_attachment`, `participant`, and `conversation` must be unchanged by an A3 run.
-- `text_clean` must exist only in A3-derived storage. A2 `text` and `message_source.raw_text` remain authoritative source/canonical values.
-- Running A3 repeatedly may replace A3-derived rows but must never delete or rewrite A2 canonical/source rows.
-- `PRAGMA foreign_key_check` must return no rows after A3 persistence.
+A3 must not change A2 source/canonical rows in:
 
-## 2. Determinism
+- `message`
+- `message_source`
+- `message_conversation`
+- `message_source_conversation`
+- `attachment`
+- `message_attachment_occurrence`
+- `participant`
+- `conversation`
 
-For an unchanged A2 projection and unchanged A3 config, two processing runs must produce the same logical values for:
+`text_clean` exists only in A3 derived storage. A2 `message.text` and `message_source.raw_text` remain authoritative values.
 
-- message sequence numbers;
-- sender-run membership;
-- session membership;
-- explicit thread membership;
+`PRAGMA foreign_key_check` and A2 integrity checks must remain clean after A3 persistence.
+
+## 2. Membership reconciliation
+
+A2 `analysis_messages` is membership-aware. A7 must verify for the tested A3 run:
+
+```text
+A2 membership rows selected for processing
+    == processing_run.input_membership_count
+    == processing_run.output_membership_count
+    == processed_message rows for that run
+```
+
+`processing_run.canonical_message_count` may be smaller because one canonical message can belong to multiple conversations.
+
+Release-blocking fixture:
+
+```text
+1 canonical message
+2 A2 message_conversation memberships
+→ 2 A3 processed membership rows
+```
+
+No membership may disappear because canonical `message_id` is duplicated across chats.
+
+## 3. Determinism
+
+For an unchanged A2 projection and unchanged A3 config, two runs must produce the same logical values for:
+
+- per-conversation sequence numbers;
+- sender-run memberships;
+- session memberships;
+- explicit thread memberships;
 - cleaned text;
 - duplicate candidate pairs/classification/method/confidence;
-- structural, timing, media, and calendar features.
+- structural, timing, media and calendar features.
 
-`processing_run.id` and wall-clock audit timestamps are expected to differ and are excluded from logical-output equality.
+`processing_run.id` and wall-clock audit timestamps are expected to differ and are excluded from logical equality.
 
-## 3. Ordering and unknown timestamps
+## 4. Immutable processing history
 
-- Ordering uses timestamp, source-order hint, source message ID, and internal ID as deterministic tie breakers.
-- Messages without a reliable timestamp remain present.
-- Unknown timestamps must not receive invented latency values.
-- Unknown timestamps must not receive UTC/local calendar components.
-- Unknown timestamps must not be silently positioned between timestamped messages by guessed time.
-
-## 4. Sessions
-
-Default session boundary: gap strictly greater than six hours.
-
-A7 boundary fixtures must include:
-
-- gap just below six hours → same session;
-- exactly six hours → same session;
-- greater than six hours → new session;
-- unknown timestamp → no temporal gap inference across that message.
-
-## 5. Replies and threads
-
-- Only configured explicit source relation types (`reply`, `reply_to` by default) create structural threads.
-- Reactions must not be treated as replies.
-- Temporal adjacency must never create a factual reply relation.
-- Explicit replies may cross temporal-session boundaries. Such a thread has `session_id = NULL` because no single session owns it.
-- A relation must never join messages from different conversations into one thread.
-- Structural threads use `method = explicit_reply_component_v1` and `confidence = 1.0`.
-
-## 6. Duplicate audit
-
-A2 remains authoritative for canonical deduplication. A3 only emits audit candidates.
+A3 v4 appends processing runs. A new run must **not** delete or replace a previous completed run.
 
 A7 must verify:
 
-- no canonical message disappears because A3 flags a duplicate candidate;
-- stable source-message identity can create `exact_source_identity` evidence;
-- weaker equal-content/time evidence remains `probable_cross_export`;
-- legitimate repeated text remains distinct canonical messages;
-- candidate IDs are stored in stable ascending order;
-- large groups of repeated short messages do not cause all-pairs/O(n²) candidate explosion.
+- two different configs/algorithm runs remain simultaneously queryable;
+- each run has its own `processed_message`, sender-run, session, thread and duplicate-candidate rows;
+- `analysis_processed_messages_latest` resolves only the latest completed run;
+- old completed rows remain unchanged after a later run.
 
-## 7. Text cleaning
+Only an obsolete incompatible **draft A3 schema** may be rebuilt. This rebuild is restricted to A3-derived tables; A2 data must survive byte/logical comparison.
+
+## 5. Ordering and unknown timestamps
+
+Canonical deterministic tie breakers include timestamp, source-order hint, source message ID, canonical message ID and membership ID.
+
+- Messages without reliable timestamps remain present.
+- Unknown timestamps receive no invented latency.
+- Unknown timestamps receive no UTC/local calendar components.
+- They are not silently inserted between timestamped rows by guessed time.
+
+## 6. Sessions
+
+Default session boundary: gap strictly greater than six hours.
+
+Boundary fixtures:
+
+- just below six hours → same session;
+- exactly six hours → same session;
+- greater than six hours → new session;
+- unknown timestamp → no temporal-gap inference across that membership.
+
+Session membership is scoped to one conversation membership stream.
+
+## 7. Replies and threads
+
+Only explicit A2 relation types configured as replies (`reply`, `reply_to`) create structural threads.
+
+- reactions are not replies;
+- temporal adjacency is never factual reply evidence;
+- an explicit reply may cross temporal sessions; then thread `session_id` is `NULL`;
+- A2 relations are canonical-message-level, so A3 must project them only into conversations shared by both endpoint memberships;
+- a relation must never create a thread across different conversations;
+- current method is `explicit_reply_membership_component_v2`, confidence `1.0`.
+
+A7 must include a canonical message with memberships in two chats and verify a reply relation affects only the shared chat.
+
+## 8. Duplicate audit
+
+A2 remains authoritative for canonical deduplication. A3 only emits non-destructive audit candidates.
+
+A7 must verify:
+
+- no canonical message or membership disappears because of a candidate;
+- stable source identity can produce `exact_source_identity` evidence;
+- weaker equal-content/time evidence remains `probable_cross_export`;
+- legitimate repeated text remains distinct;
+- candidate canonical message IDs are stored in stable ascending order;
+- repeated short messages do not trigger O(n²) candidate explosion.
+
+## 9. Text cleaning
 
 Cleaning may normalize transport artifacts only. Fixtures must confirm preservation of:
 
-- letter case;
+- case;
 - emoji;
 - repeated `!` and `?`;
 - meaningful line breaks.
 
-CRLF/CR line endings, NBSP, trailing transport whitespace, and invalid control characters may be normalized in `text_clean` only.
+CRLF/CR, NBSP, trailing transport whitespace and invalid controls may be normalized only in A3 `text_clean`.
 
-## 8. Media
+## 10. Media
 
-A3 classifies attachments deterministically using MIME first and filename extension second:
+A3 classifies attachment occurrences using MIME first and filename extension second into:
 
-- image;
-- gif;
-- video;
-- audio;
-- document;
-- other.
+- image
+- gif
+- video
+- audio
+- document
+- other
 
-A7 must verify attachment counts and `missing_attachment_count`. A missing physical file must never remove its parent message. Generic audio must not be promoted to a voice-message semantic type without source evidence.
+A7 validates occurrence counts and `missing_attachment_count`. Missing bytes never remove the parent message/membership.
 
-## 9. Calendar fields
+## 11. Calendar fields
 
-- UTC calendar components are derived only from a real UTC timestamp.
-- Local calendar components are derived only when A2 provides `timezone_offset_min` for that message.
+- UTC fields require a real A2 UTC timestamp.
+- Local fields require A2 `timezone_offset_min`.
 - No hard-coded CET/CEST offset is allowed.
-- Weekday convention is Python `datetime.weekday()`: Monday = 0, Sunday = 6.
+- Weekday convention is Python `datetime.weekday()`: Monday `0`, Sunday `6`.
 
-A7 should include at least one fixture on each side of a CET/CEST offset change using explicit source offsets.
+A7 should include source offsets on both sides of a CET/CEST change.
 
-## 10. Persistence and old A3 draft schema
+## 12. Source provenance
 
-A3 may rebuild obsolete A3-derived tables when their draft schema is incompatible. It must never drop A2 tables.
+A3 projection preserves the deterministic set of A2 `source_record_key` values associated with a canonical message. A3 must not silently choose provenance based on whichever `message_source` row happens to appear first.
 
-A7 should initialize an obsolete A3 fixture and confirm:
+For downstream A4/A5 evidence, A7 should verify every processed membership can resolve through:
 
-- A3 derived schema is upgraded/rebuilt;
-- all A2 records remain intact;
-- foreign keys remain valid;
-- a subsequent A3 run completes successfully.
+```text
+processed_message.membership_id
+→ message_conversation
+→ canonical message
+→ message_source / source_record_key
+```
 
-## 11. Real A2 contract test
+and, where applicable:
 
-`tests/test_a3_a2_integration.py` is the mandatory integration smoke test. It creates a real `CanonicalDatabase`, inserts canonical messages, media, a missing attachment and an explicit reply, then executes and persists A3 output.
+```text
+membership_id
+→ message_source_conversation
+→ conversation_source
+→ source_snapshot_key
+```
 
-Any future A2 schema/view change that breaks this test is an A2↔A3 contract regression and blocks integration until resolved.
+## 13. Real vertical contract tests
 
-## 12. Acceptance evidence
+Current release-blocking integration tests include:
+
+1. real A2 v5 canonical database → A3 projection/process/persist with attachments, missing media and explicit reply;
+2. A1-style multi-chat staging → A2 v5 → A3, proving one canonical message survives as two processed memberships;
+3. two persisted A3 runs over the same A2 data remain simultaneously available;
+4. A2 raw/canonical text and provenance remain unchanged.
+
+## 14. Acceptance evidence
 
 A7 handoff is green only when it records:
 
-1. exact tested A2 SHA;
-2. exact tested A3 SHA;
-3. A2 workflow success on the tested contract;
-4. A3 workflow success on the integration SHA;
-5. real A2→A3 contract test PASS;
-6. foreign-key check PASS;
-7. no A2 source/canonical mutation;
-8. deterministic rerun PASS.
+1. exact tested repository/main SHA;
+2. exact A3 processing version/config;
+3. A1/A2/A3 workflow state on the tested integration head;
+4. full vertical regression PASS;
+5. A2 membership ↔ A3 processed-membership reconciliation PASS;
+6. source-record provenance resolution PASS;
+7. foreign-key/integrity PASS;
+8. no A2 RAW/canonical mutation;
+9. deterministic logical rerun PASS;
+10. immutable previous processing-run retention PASS.
 
 No AI/LLM output is required to validate A3.
