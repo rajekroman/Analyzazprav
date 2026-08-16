@@ -63,7 +63,12 @@ jobs:
       - name: Compare actual A4 output with independent A7 oracle
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/a4-under-test/src
-        run: python -m qa.a4_live_contract
+        run: python -m qa.a4_live_contract --report a7-a4-report.json
+      - name: Upload A4 audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a4-report
+          path: a7-a4-report.json
 
   a5-pinned-audit:
     runs-on: ubuntu-latest
@@ -84,6 +89,11 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/a5-under-test/src
         run: python -m qa.a5_live_contract --expect VALID --report a7-a5-report.json
+      - name: Upload A5 audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a5-report
+          path: a7-a5-report.json
 
   a6-pinned-audit:
     runs-on: ubuntu-latest
@@ -104,3 +114,45 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/a6-under-test
         run: python -m qa.a6_live_contract --expect INVALID --report a7-a6-report.json
+      - name: Upload A6 audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a6-report
+          path: a7-a6-report.json
+
+  release-verdict:
+    if: always()
+    needs:
+      - qa
+      - a4-pinned-contract
+      - a5-pinned-audit
+      - a6-pinned-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout A7
+        uses: actions/checkout@v4
+      - name: Download component audit reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: a7-*-report
+          path: release-reports
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Aggregate explicit release verdict
+        run: >-
+          python -m qa.release_verdict
+          --core-job "${{ needs.qa.result }}"
+          --a4-job "${{ needs.a4-pinned-contract.result }}"
+          --a5-job "${{ needs.a5-pinned-audit.result }}"
+          --a6-job "${{ needs.a6-pinned-audit.result }}"
+          --report-dir release-reports
+          --expect INVALID
+          --report a7-release-verdict.json
+      - name: Upload aggregate release verdict
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-release-verdict
+          path: a7-release-verdict.json
