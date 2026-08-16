@@ -66,24 +66,34 @@ def load_a4_conversation_metrics(path: str | Path, conversation_id: str) -> A4Co
         raise DataSourceError(f"Chyba při čtení A4 metrik: {exc}") from exc
 
     if not labels.empty:
+        labels = labels.copy()
         labels["participant_id"] = labels["participant_id"].astype(str)
-        for frame in (daily, participants):
-            if not frame.empty and "participant_id" in frame:
-                frame["participant_id"] = frame["participant_id"].astype(str)
-                frame = frame.merge(labels, on="participant_id", how="left")
-                if frame is daily:
-                    daily = frame
-                else:
-                    participants = frame
+
+        def add_participant_labels(frame: pd.DataFrame) -> pd.DataFrame:
+            if frame.empty or "participant_id" not in frame:
+                return frame
+            result = frame.copy()
+            result["participant_id"] = result["participant_id"].astype(str)
+            return result.merge(labels, on="participant_id", how="left")
+
+        daily = add_participant_labels(daily)
+        participants = add_participant_labels(participants)
+
         if not responses.empty:
-            for source_col, target_col in (("responder_id", "responder"), ("from_participant_id", "from_participant")):
+            responses = responses.copy()
+            for source_col, target_col in (
+                ("responder_id", "responder"),
+                ("from_participant_id", "from_participant"),
+            ):
                 if source_col in responses:
                     responses[source_col] = responses[source_col].astype(str)
                     lookup = labels.rename(columns={"participant_id": source_col, "sender": target_col})
                     responses = responses.merge(lookup, on=source_col, how="left")
 
     if not daily.empty and "period_date" in daily:
+        daily = daily.copy()
         daily["period_date"] = pd.to_datetime(daily["period_date"], errors="coerce")
+
     return A4ConversationMetrics(
         daily=daily.reset_index(drop=True),
         participants=participants.reset_index(drop=True),
