@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from statistics import median
+from math import floor
+from statistics import mean, median
 from typing import Iterable, Sequence
 
 from .config import AnalyticsConfig
-from .models import AnalyticMessage, ConflictCandidate, ConversationAnalytics, ResponseSample, Turn
+from .models import AnalyticMessage, ConflictCandidate, ConversationAnalytics, ResponseSample, TimeBucketMetric, Turn
+from .time_behavior import build_silence_events, build_time_buckets
 from .trends import (
     build_daily_metrics,
     build_dyadic_regimes,
@@ -22,6 +24,28 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 def _marker_hits(text: str, markers: Sequence[str]) -> int:
     lowered = text.casefold()
     return sum(lowered.count(marker.casefold()) for marker in markers if marker)
+
+
+def _percentile(values: Sequence[float], probability: float) -> float | None:
+    """Linear-interpolated percentile over sorted samples.
+
+    Position is `(n - 1) * probability`, matching the intuitive inclusive
+    endpoints: P0=min and P100=max. This definition is deterministic and does
+    not depend on numpy/pandas implementations.
+    """
+
+    if not values:
+        return None
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("probability must be between 0 and 1")
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * probability
+    lower = floor(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
 def build_turns(messages: Iterable[AnalyticMessage]) -> list[Turn]:
@@ -107,6 +131,28 @@ def response_samples(turns: Sequence[Turn]) -> list[ResponseSample]:
     return samples
 
 
+def _unanswered_turn_counts(turns: Sequence[Turn]) -> Counter[int]:
+    """Count known-sender turns with no later other-sender turn in the session."""
+
+    grouped: dict[int, list[Turn]] = defaultdict(list)
+    for turn in turns:
+        grouped[turn.session_id].append(turn)
+    counts: Counter[int] = Counter()
+    for session_turns in grouped.values():
+        for index, turn in enumerate(session_turns):
+            participant_id = turn.participant_id
+            if participant_id is None:
+                continue
+            answered = any(
+                later.participant_id is not None
+                and later.participant_id != participant_id
+                for later in session_turns[index + 1 :]
+            )
+            if not answered:
+                counts[int(participant_id)] += 1
+    return counts
+
+
 def _reciprocity(participants: dict[int, dict[str, object]]) -> dict[str, float | None]:
     def ratio(metric: str) -> float | None:
         if len(participants) != 2:
@@ -124,10 +170,27 @@ def _reciprocity(participants: dict[int, dict[str, object]]) -> dict[str, float 
     }
 
 
+def _time_summary(
+    time_buckets: Sequence[TimeBucketMetric],
+) -> tuple[Counter[int], Counter[int], Counter[int]]:
+    clock_known: Counter[int] = Counter()
+    weekend: Counter[int] = Counter()
+    night: Counter[int] = Counter()
+    for row in time_buckets:
+        if row.bucket_kind == "hour":
+            clock_known[row.participant_id] += row.message_count
+        elif row.bucket_kind == "weekend" and row.bucket_value == "weekend":
+            weekend[row.participant_id] += row.message_count
+        elif row.bucket_kind == "night" and row.bucket_value == "night":
+            night[row.participant_id] += row.message_count
+    return clock_known, weekend, night
+
+
 def _participant_metrics(
     messages: Sequence[AnalyticMessage],
     turns: Sequence[Turn],
     responses: Sequence[ResponseSample],
+    time_buckets: Sequence[TimeBucketMetric],
     config: AnalyticsConfig,
 ) -> dict[int, dict[str, object]]:
     participants = sorted({m.participant_id for m in messages if m.participant_id is not None})
@@ -166,19 +229,24 @@ def _participant_metrics(
             initiations[turn.participant_id] += 1
             known_initiated_sessions += 1
 
+    unanswered = _unanswered_turn_counts(turns)
     latency_by_responder: dict[int, list[float]] = defaultdict(list)
     effort_by_responder: dict[int, list[float]] = defaultdict(list)
+    response_turn_count: Counter[int] = Counter()
     for sample in responses:
+        response_turn_count[sample.responder_id] += 1
         if sample.latency_seconds is not None:
             latency_by_responder[sample.responder_id].append(sample.latency_seconds)
         effort_by_responder[sample.responder_id].append(sample.response_effort_ratio)
 
+    clock_known, weekend_count, night_count = _time_summary(time_buckets)
     known_turns = max(1, sum(turn_count.values()))
     result: dict[int, dict[str, object]] = {}
     for pid in participants:
         response_values = latency_by_responder.get(pid, [])
         effort_values = effort_by_responder.get(pid, [])
         median_latency = median(response_values) if response_values else None
+        mean_latency = mean(response_values) if response_values else None
         median_effort = median(effort_values) if effort_values else None
         activity_share = turn_count[pid] / known_turns
         initiation_share = initiations[pid] / max(1, known_initiated_sessions)
@@ -208,8 +276,18 @@ def _participant_metrics(
             "exclamation_count": exclamations[pid],
             "affection_marker_count": affection[pid],
             "negative_marker_count": negative[pid],
+            "response_turn_count": response_turn_count[pid],
+            "latency_sample_count": len(response_values),
+            "unanswered_turn_count": unanswered[pid],
+            "mean_response_latency_seconds": mean_latency,
             "median_response_latency_seconds": median_latency,
+            "p25_response_latency_seconds": _percentile(response_values, 0.25),
+            "p75_response_latency_seconds": _percentile(response_values, 0.75),
+            "p90_response_latency_seconds": _percentile(response_values, 0.90),
             "median_response_effort_ratio": median_effort,
+            "clock_known_message_count": clock_known[pid],
+            "weekend_message_count": weekend_count[pid],
+            "night_message_count": night_count[pid],
             "engagement_score": round(engagement, 6),
         }
     return result
@@ -302,8 +380,10 @@ def analyze_conversation(
 
     turns = build_turns(source)
     responses = response_samples(turns)
-    metrics = _participant_metrics(source, turns, responses, cfg)
+    time_buckets = build_time_buckets(source, cfg)
+    metrics = _participant_metrics(source, turns, responses, time_buckets, cfg)
     conflicts = _conflict_candidates(turns, cfg)
+    silence_events = build_silence_events(turns, cfg)
     daily_metrics = build_daily_metrics(source, turns, responses, cfg)
     weekly_metrics = build_period_metrics(
         source, turns, responses, cfg, period_kind="week"
@@ -335,6 +415,8 @@ def analyze_conversation(
         reciprocity=_reciprocity(metrics),
         response_samples=responses,
         conflicts=conflicts,
+        silence_events=silence_events,
+        time_buckets=time_buckets,
         daily_metrics=daily_metrics,
         change_points=change_points,
         period_metrics=period_metrics,
@@ -347,5 +429,7 @@ def analyze_conversation(
             ),
             "message_accounting_ok": len(message_ids) == len(source),
             "uses_a3_session_boundaries": True,
+            "long_silence_threshold_seconds": cfg.long_silence_seconds,
+            "night_interval": [cfg.night_start_hour, cfg.night_end_hour],
         },
     )
