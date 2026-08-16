@@ -76,3 +76,14 @@ def test_multiple_conversations_fail_closed():
     ))
     with pytest.raises(A6PacketError, match="multiple conversations"):
         messages_from_a6_packet(value)
+
+
+def test_legacy_unverified_packet_without_membership_gets_explicit_compat_identity():
+    value = packet(required=False)
+    value["messages"][0].pop("membership_id")
+    value["messages"][0]["source_record_keys"] = []
+    value["messages"][0]["source_snapshot_keys"] = []
+    value["messages"][0]["source_parser_versions"] = []
+    row = messages_from_a6_packet(value)[0]
+    assert row.membership_id == "compat:7:11"
+    assert row.source_record_keys == ()

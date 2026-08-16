@@ -51,13 +51,19 @@ def messages_from_a6_packet(packet: Mapping[str, Any]) -> tuple[MessageRecord, .
             raise A6PacketError(f"A6 messages[{index}] must be an object")
         try:
             message_id = str(raw["message_id"])
-            membership_id = str(raw["membership_id"])
             conversation_id = str(raw["conversation_id"])
             sender = str(raw["sender"])
             text = str(raw.get("text") or "")
             timestamp = _parse_timestamp(raw["timestamp"])
         except KeyError as exc:
             raise A6PacketError(f"A6 messages[{index}] missing field: {exc.args[0]}") from exc
+        raw_membership = raw.get("membership_id")
+        if raw_membership in (None, ""):
+            if provenance_required:
+                raise A6PacketError(f"A6 messages[{index}] missing field: membership_id")
+            membership_id = f"compat:{conversation_id}:{message_id}"
+        else:
+            membership_id = str(raw_membership)
         if not message_id or not membership_id or not conversation_id:
             raise A6PacketError(f"A6 messages[{index}] lacks canonical identity")
         if message_id in seen_ids:
