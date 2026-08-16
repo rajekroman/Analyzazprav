@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 from analyzazprav.analytics import AnalyticMessage, AnalyticsConfig, analyze_conversation
 
@@ -37,7 +39,7 @@ def _message(row: dict) -> AnalyticMessage:
     )
 
 
-def main() -> int:
+def audit_a4_contract() -> dict[str, object]:
     config = AnalyticsConfig(topic_min_document_frequency=2)
     result = analyze_conversation([_message(row) for row in SOURCE], config)
     serialized = asdict(result)
@@ -92,8 +94,10 @@ def main() -> int:
             "detail": "Pinned A4 golden dataset must produce lexical topic candidate and evidence rows",
         })
 
-    output = {
+    return {
+        "schema_version": 2,
         "status": "FAIL" if issues else STATUS_PASS,
+        "verdict": "INVALID" if issues else "VALID",
         "oracle_status": report["status"],
         "source_message_count": serialized.get("source_message_count"),
         "turn_count": serialized.get("turn_count"),
@@ -102,8 +106,19 @@ def main() -> int:
         "topic_evidence_count": len(evidence),
         "issues": issues,
     }
-    print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
-    return 1 if issues or report["status"] != STATUS_PASS else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="A7 audit of pinned A4 live contract")
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args(argv)
+    output = audit_a4_contract()
+    rendered = json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True)
+    print(rendered)
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(rendered + "\n", encoding="utf-8")
+    return 1 if output["verdict"] != "VALID" else 0
 
 
 if __name__ == "__main__":
