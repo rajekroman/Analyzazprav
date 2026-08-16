@@ -85,7 +85,7 @@ class CanonicalDatabase:
         value = value.strip()
         if kind == "email":
             return value.lower()
-        if kind in {"phone", "imessage_handle"}:
+        if kind == "phone":
             value = re.sub(r"[\s().-]+", "", value)
             if value.startswith("00"):
                 value = "+" + value[2:]
