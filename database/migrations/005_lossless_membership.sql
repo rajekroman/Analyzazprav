@@ -9,21 +9,27 @@ CREATE TABLE conversation_source (
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     import_run_id INTEGER REFERENCES import_run(id) ON DELETE SET NULL,
     source_type TEXT NOT NULL,
-    source_sha256 TEXT NOT NULL,
+    source_snapshot_key TEXT NOT NULL,
+    source_sha256 TEXT,
     source_conversation_id TEXT NOT NULL,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    UNIQUE(source_type, source_sha256, source_conversation_id)
+    UNIQUE(source_type, source_snapshot_key, source_conversation_id)
 );
 
 INSERT INTO conversation_source(
-    id, conversation_id, import_run_id, source_type, source_sha256,
-    source_conversation_id, metadata_json
+    id, conversation_id, import_run_id, source_type, source_snapshot_key,
+    source_sha256, source_conversation_id, metadata_json
 )
 SELECT cs.id,
        cs.conversation_id,
        cs.import_run_id,
        cs.source_type,
-       COALESCE(ir.source_sha256, 'legacy-conversation-source:' || CAST(cs.id AS TEXT)),
+       COALESCE(
+           ir.source_sha256,
+           CASE WHEN ir.source_fingerprint IS NOT NULL THEN 'fingerprint:' || ir.source_fingerprint END,
+           'legacy-conversation-source:' || CAST(cs.id AS TEXT)
+       ),
+       ir.source_sha256,
        cs.source_conversation_id,
        cs.metadata_json
 FROM conversation_source_legacy_v4 cs
@@ -33,26 +39,30 @@ LEFT JOIN import_run ir ON ir.id = cs.import_run_id;
 -- This cannot infer a different canonical conversation after an old collision,
 -- but it does restore distinct source relations for audit and future processing.
 INSERT OR IGNORE INTO conversation_source(
-    conversation_id, import_run_id, source_type, source_sha256,
-    source_conversation_id, metadata_json
+    conversation_id, import_run_id, source_type, source_snapshot_key,
+    source_sha256, source_conversation_id, metadata_json
 )
 SELECT DISTINCT
        m.conversation_id,
        ms.import_run_id,
        ms.source_type,
-       COALESCE(ir.source_sha256, 'legacy-run:' || CAST(ms.import_run_id AS TEXT)),
+       COALESCE(ir.source_sha256, 'fingerprint:' || ir.source_fingerprint),
+       ir.source_sha256,
        ms.source_conversation_id,
        '{"recovered_from":"message_source"}'
 FROM message_source ms
 JOIN message m ON m.id = ms.message_id
-LEFT JOIN import_run ir ON ir.id = ms.import_run_id
+JOIN import_run ir ON ir.id = ms.import_run_id
 WHERE ms.source_conversation_id IS NOT NULL
   AND ms.source_conversation_id <> '';
 
 DROP TABLE conversation_source_legacy_v4;
 
 CREATE INDEX idx_conversation_source_snapshot
-ON conversation_source(source_type, source_sha256, source_conversation_id);
+ON conversation_source(source_type, source_snapshot_key, source_conversation_id);
+CREATE INDEX idx_conversation_source_sha256
+ON conversation_source(source_type, source_sha256, source_conversation_id)
+WHERE source_sha256 IS NOT NULL;
 CREATE INDEX idx_conversation_source_conversation
 ON conversation_source(conversation_id);
 
@@ -97,7 +107,7 @@ FROM message_source ms
 JOIN import_run ir ON ir.id = ms.import_run_id
 JOIN conversation_source cs
   ON cs.source_type = ms.source_type
- AND cs.source_sha256 = COALESCE(ir.source_sha256, 'legacy-run:' || CAST(ms.import_run_id AS TEXT))
+ AND cs.source_snapshot_key = COALESCE(ir.source_sha256, 'fingerprint:' || ir.source_fingerprint)
  AND cs.source_conversation_id = ms.source_conversation_id
 JOIN message_conversation mc
   ON mc.message_id = ms.message_id
@@ -188,6 +198,7 @@ DROP VIEW IF EXISTS analysis_message_sources;
 CREATE VIEW analysis_message_sources AS
 SELECT ms.message_id,
        ms.source_type,
+       COALESCE(ir.source_sha256, 'fingerprint:' || ir.source_fingerprint) AS source_snapshot_key,
        ir.source_sha256,
        ms.source_message_id,
        ms.source_conversation_id,
@@ -209,6 +220,7 @@ SELECT mc.id AS membership_id,
        msc.message_source_id,
        msc.conversation_source_id,
        cs.source_type,
+       cs.source_snapshot_key,
        cs.source_sha256,
        cs.source_conversation_id,
        msc.position AS source_relation_position
