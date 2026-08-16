@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from typing import Sequence
+
+from .config import AnalyticsConfig
+from .models import ConversationAnalytics
 from .store_v6 import AnalyticsStore as V6AnalyticsStore
 
 
 class AnalyticsStore(V6AnalyticsStore):
-    """A4 persistence guard for the integrated membership-scoped A3 contract.
+    """Persistence guard for the integrated membership-scoped A3 contract.
 
-    Older draft A4 schemas referenced `conversation_session(id)` as if session
-    ids were globally unique. Integrated A3 scopes sessions by processing run.
-    If an old A4 derived schema is found, rebuild only A4 reproducible data and
-    leave all A1-A3 source/normalized/processed tables untouched.
+    A3 session ids are scoped by `processing_run_id`. A4 stores the processing
+    run once in `analytics_run` and validates every referenced session before
+    persistence. This keeps the schema normalized while preserving exact A3
+    provenance.
     """
 
     def _object_exists(self, object_type: str, name: str) -> bool:
@@ -24,11 +28,15 @@ class AnalyticsStore(V6AnalyticsStore):
     def _needs_integrated_schema_rebuild(self) -> bool:
         if not self._object_exists("table", "analytics_run"):
             return False
-        return not (
-            self._object_exists("trigger", "a4_validate_response_session")
-            and self._object_exists("trigger", "a4_validate_silence_sessions")
-            and self._object_exists("trigger", "a4_validate_event_session")
-        )
+        if not self._object_exists("table", "analytics_response_latency"):
+            return True
+        # Old draft A4 referenced conversation_session(id) directly. Integrated
+        # A3 uses the composite identity (processing_run_id, id), so any direct
+        # session FK marks a reproducible A4 schema that must be rebuilt.
+        foreign_keys = self.conn.execute(
+            "PRAGMA foreign_key_list(analytics_response_latency)"
+        ).fetchall()
+        return any(str(row[2]) == "conversation_session" for row in foreign_keys)
 
     def _drop_all_a4_derived(self) -> None:
         views = (
@@ -86,3 +94,62 @@ class AnalyticsStore(V6AnalyticsStore):
             if self._needs_integrated_schema_rebuild():
                 self._drop_all_a4_derived()
         super().initialize()
+
+    def _validate_session_provenance(
+        self,
+        results: Sequence[ConversationAnalytics],
+        processing_run_id: int,
+    ) -> None:
+        references: set[tuple[int, int]] = set()
+        for result in results:
+            references.update(
+                (sample.conversation_id, sample.session_id)
+                for sample in result.response_samples
+            )
+            references.update(
+                (event.conversation_id, event.session_id)
+                for event in result.conflicts
+            )
+            for event in result.silence_events:
+                references.add((event.conversation_id, event.previous_session_id))
+                references.add((event.conversation_id, event.next_session_id))
+        if not references:
+            return
+
+        session_columns = {
+            str(row[1])
+            for row in self.conn.execute("PRAGMA table_info(conversation_session)")
+        }
+        scoped = "processing_run_id" in session_columns
+        missing: list[tuple[int, int]] = []
+        for conversation_id, session_id in sorted(references):
+            if scoped:
+                row = self.conn.execute(
+                    """SELECT 1 FROM conversation_session
+                       WHERE processing_run_id=? AND id=? AND conversation_id=?""",
+                    (processing_run_id, session_id, conversation_id),
+                ).fetchone()
+            else:
+                # Compatibility path for small isolated A4 fixtures only.
+                row = self.conn.execute(
+                    "SELECT 1 FROM conversation_session WHERE id=? AND conversation_id=?",
+                    (session_id, conversation_id),
+                ).fetchone()
+            if row is None:
+                missing.append((conversation_id, session_id))
+
+        if missing:
+            raise RuntimeError(
+                "A4 session provenance does not exist in selected A3 processing run: "
+                f"{missing}"
+            )
+
+    def write_run(
+        self,
+        results: Sequence[ConversationAnalytics],
+        config: AnalyticsConfig,
+        processing_run_id: int | None = None,
+    ) -> int:
+        processing_id = processing_run_id or self.latest_processing_run_id()
+        self._validate_session_provenance(results, processing_id)
+        return super().write_run(results, config, processing_id)
