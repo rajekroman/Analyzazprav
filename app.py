@@ -123,7 +123,12 @@ def main():
     with t4:
         st.write("Analýza se nespouští automaticky. A6 pouze připraví auditovatelný kontext pro A5.")
         if selected:
-            payload = json.dumps(analysis_packet(filtered, selected), ensure_ascii=False, indent=2)
+            radius = int(st.number_input("Kontext před/po vybrané zprávě", 0, 100, 20, 5))
+            payload = json.dumps(
+                analysis_packet(filtered, selected, context_before=radius, context_after=radius),
+                ensure_ascii=False,
+                indent=2,
+            )
             st.code(payload, language="json")
             st.download_button("Stáhnout A5 kontext", payload, "a5-context.json", "application/json")
         else:
