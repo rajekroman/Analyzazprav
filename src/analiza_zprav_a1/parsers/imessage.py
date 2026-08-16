@@ -6,7 +6,7 @@ from typing import Iterator
 
 from ..apple_time import apple_timestamp_precision, apple_timestamp_to_iso
 from ..jsonsafe import json_safe
-from ..models import AttachmentRecord, MessageRecord
+from ..models import AttachmentRecord, ConversationSourceRecord, MessageRecord
 from ..text_decode import decode_attributed_body
 
 
@@ -30,6 +30,14 @@ class IMessageParser:
         return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
     def iter_messages(self) -> Iterator[MessageRecord]:
+        """Yield exactly one record per physical Apple `message` row.
+
+        `chat_message_join` is deliberately not part of the main SELECT because
+        one message may have multiple source chat relations. Those relations are
+        collected separately into `conversation_sources` so relational
+        cardinality can never duplicate or hide a physical source message.
+        """
+
         with self._connect() as conn:
             tables = self._tables(conn)
             participant_cache: dict[int, list[str]] = {}
@@ -41,10 +49,18 @@ class IMessageParser:
                 raise ValueError("Unsupported Apple Messages schema: message.date/is_from_me missing")
 
             text_expr = "m.text AS _text" if "text" in mcols else "NULL AS _text"
-            attributed_expr = "m.attributedBody AS _attributedBody" if "attributedBody" in mcols else "NULL AS _attributedBody"
+            attributed_expr = (
+                "m.attributedBody AS _attributedBody"
+                if "attributedBody" in mcols
+                else "NULL AS _attributedBody"
+            )
             guid_expr = "m.guid AS _guid" if "guid" in mcols else "NULL AS _guid"
             service_expr = "m.service AS _service" if "service" in mcols else "NULL AS _service"
-            reply_expr = "m.thread_originator_guid AS _reply_to_guid" if "thread_originator_guid" in mcols else "NULL AS _reply_to_guid"
+            reply_expr = (
+                "m.thread_originator_guid AS _reply_to_guid"
+                if "thread_originator_guid" in mcols
+                else "NULL AS _reply_to_guid"
+            )
 
             if "handle_id" in mcols and "handle" in tables:
                 handle_expr = "h.id AS _sender_handle"
@@ -53,19 +69,11 @@ class IMessageParser:
                 handle_expr = "NULL AS _sender_handle"
                 handle_join = ""
 
-            if "chat_message_join" in tables:
-                chat_expr = "cmj.chat_id AS _chat_rowid"
-                chat_join = "LEFT JOIN chat_message_join cmj ON cmj.message_id=m.ROWID"
-            else:
-                chat_expr = "NULL AS _chat_rowid"
-                chat_join = ""
-
             query = f"""
             SELECT m.*, m.ROWID AS _message_rowid,
                    {guid_expr}, {text_expr}, {attributed_expr}, {service_expr},
-                   {handle_expr}, {reply_expr}, {chat_expr}
+                   {handle_expr}, {reply_expr}
             FROM message m
-            {chat_join}
             {handle_join}
             ORDER BY m.date, m.ROWID
             """
@@ -79,19 +87,26 @@ class IMessageParser:
                     text_source = "attributedBody" if text is not None else None
 
                 message_rowid = int(row["_message_rowid"])
-                chat_id = row["_chat_rowid"]
-                conversation_source_id = str(chat_id) if chat_id is not None else f"orphan:{message_rowid}"
-                participants: list[str] = []
-                conversation_metadata: dict[str, object] = {}
-                if chat_id is not None:
-                    chat_rowid = int(chat_id)
-                    if chat_rowid not in participant_cache:
-                        participant_cache[chat_rowid] = self._participants_for_chat(conn, chat_rowid, tables)
-                    if chat_rowid not in conversation_cache:
-                        conversation_cache[chat_rowid] = self._conversation_metadata(conn, chat_rowid, tables)
-                    participants = participant_cache[chat_rowid]
-                    conversation_metadata = conversation_cache[chat_rowid]
+                conversation_sources = self._conversation_sources_for_message(
+                    conn,
+                    message_rowid,
+                    tables,
+                    participant_cache,
+                    conversation_cache,
+                    None if row["_service"] is None else str(row["_service"]),
+                )
+                if not conversation_sources:
+                    conversation_sources = [
+                        ConversationSourceRecord(
+                            source_conversation_key=f"orphan:{message_rowid}",
+                            raw_chat_rowid=None,
+                            chat_guid=None,
+                            service=None if row["_service"] is None else str(row["_service"]),
+                            metadata={"orphan_source_message": True},
+                        )
+                    ]
 
+                primary = conversation_sources[0]
                 raw_payload = {
                     key: json_safe(row[key])
                     for key in row.keys()
@@ -101,7 +116,7 @@ class IMessageParser:
                 yield MessageRecord(
                     source_message_id=str(message_rowid),
                     source_guid=row["_guid"],
-                    conversation_source_id=conversation_source_id,
+                    conversation_source_id=primary.source_conversation_key,
                     timestamp_raw=row["date"],
                     timestamp_utc=apple_timestamp_to_iso(row["date"]),
                     timestamp_precision=apple_timestamp_precision(row["date"]),
@@ -111,13 +126,73 @@ class IMessageParser:
                     raw_text=raw_text,
                     text_source=text_source,
                     service=row["_service"],
-                    conversation_participant_handles=list(participants),
-                    conversation_metadata=dict(conversation_metadata),
+                    conversation_sources=conversation_sources,
+                    conversation_participant_handles=list(primary.participant_handles),
+                    conversation_metadata=dict(primary.metadata),
                     reply_to_guid=row["_reply_to_guid"],
                     attachments=self._attachments_for(conn, message_rowid),
                     raw_payload=raw_payload,
                     metadata={},
                 )
+
+    def _conversation_sources_for_message(
+        self,
+        conn: sqlite3.Connection,
+        message_id: int,
+        tables: set[str],
+        participant_cache: dict[int, list[str]],
+        conversation_cache: dict[int, dict[str, object]],
+        message_service: str | None,
+    ) -> list[ConversationSourceRecord]:
+        if "chat_message_join" not in tables:
+            return []
+
+        rows = conn.execute(
+            """SELECT chat_id
+               FROM chat_message_join
+               WHERE message_id=?
+               ORDER BY chat_id""",
+            (message_id,),
+        )
+        result: list[ConversationSourceRecord] = []
+        seen_chat_ids: set[int] = set()
+        for row in rows:
+            if row[0] is None:
+                continue
+            chat_id = int(row[0])
+            if chat_id in seen_chat_ids:
+                continue
+            seen_chat_ids.add(chat_id)
+
+            if chat_id not in participant_cache:
+                participant_cache[chat_id] = self._participants_for_chat(conn, chat_id, tables)
+            if chat_id not in conversation_cache:
+                conversation_cache[chat_id] = self._conversation_metadata(conn, chat_id, tables)
+
+            participants = participant_cache[chat_id]
+            chat_metadata = dict(conversation_cache[chat_id])
+            raw_guid = chat_metadata.get("guid")
+            chat_guid = str(raw_guid).strip() if raw_guid not in (None, "") else None
+            source_conversation_key = (
+                f"guid:{chat_guid}" if chat_guid else f"rowid:{chat_id}"
+            )
+            raw_service = chat_metadata.get("service_name") or chat_metadata.get("service")
+            relation_service = (
+                str(raw_service)
+                if raw_service not in (None, "")
+                else message_service
+            )
+            result.append(
+                ConversationSourceRecord(
+                    source_conversation_key=source_conversation_key,
+                    raw_chat_rowid=chat_id,
+                    chat_guid=chat_guid,
+                    service=relation_service,
+                    participant_handles=list(participants),
+                    metadata=chat_metadata,
+                )
+            )
+        return result
 
     @staticmethod
     def _participants_for_chat(
@@ -157,7 +232,7 @@ class IMessageParser:
             return []
         rows = conn.execute(
             """
-            SELECT a.* , a.ROWID AS _attachment_rowid
+            SELECT a.*, a.ROWID AS _attachment_rowid
             FROM message_attachment_join maj
             JOIN attachment a ON a.ROWID=maj.attachment_id
             WHERE maj.message_id=?
