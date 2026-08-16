@@ -1,0 +1,40 @@
+name: A6 tests
+
+on:
+  push:
+    branches:
+      - agent/a6-local-ui
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'a6/**'
+      - 'tests/test_a6_data.py'
+      - 'requirements.txt'
+      - '.github/workflows/a6-tests.yml'
+
+jobs:
+  test-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install A6 dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run A6 tests
+        run: pytest -q tests/test_a6_data.py
+      - name: Streamlit startup smoke test
+        shell: bash
+        run: |
+          streamlit run app.py --server.headless true --server.port 8765 > /tmp/a6-streamlit.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error http://127.0.0.1:8765/_stcore/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/a6-streamlit.log
+          exit 1
