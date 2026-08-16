@@ -114,7 +114,9 @@ def build_explicit_threads(
             continue
         if relation.source_message_id not in by_id or relation.target_message_id not in by_id:
             continue
-        if session_map.get(relation.source_message_id) != session_map.get(relation.target_message_id):
+        source = by_id[relation.source_message_id]
+        target = by_id[relation.target_message_id]
+        if source.conversation_id != target.conversation_id:
             continue
         adjacency.setdefault(relation.source_message_id, set()).add(relation.target_message_id)
         adjacency.setdefault(relation.target_message_id, set()).add(relation.source_message_id)
@@ -139,10 +141,11 @@ def build_explicit_threads(
             continue
         ordered_ids = tuple(sorted(component, key=lambda message_id: canonical_sort_key(by_id[message_id])))
         first = by_id[ordered_ids[0]]
+        component_sessions = {session_map[message_id] for message_id in ordered_ids}
         thread = Thread(
             id=next_id,
             conversation_id=first.conversation_id,
-            session_id=session_map[first.id],
+            session_id=next(iter(component_sessions)) if len(component_sessions) == 1 else None,
             message_ids=ordered_ids,
             method="explicit_reply_component_v1",
             confidence=1.0,

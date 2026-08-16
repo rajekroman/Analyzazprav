@@ -83,6 +83,20 @@ class ProcessingCoreTests(unittest.TestCase):
         self.assertIsNotNone(by_id[2].thread_id)
         self.assertIsNone(by_id[4].thread_id)
 
+    def test_explicit_reply_can_cross_session_boundary(self):
+        result = process_messages(self.messages, [MessageRelation(5, 1, "reply")])
+        self.assertEqual(len(result.threads), 1)
+        self.assertEqual(result.threads[0].message_ids, (1, 5))
+        self.assertIsNone(result.threads[0].session_id)
+        by_id = {m.message_id: m for m in result.messages}
+        self.assertEqual(by_id[1].thread_id, by_id[5].thread_id)
+        self.assertNotEqual(by_id[1].session_id, by_id[5].session_id)
+
+    def test_relation_cannot_join_different_conversations(self):
+        foreign = CanonicalMessage(100, 99, 300, 4_000_000, "Jiný chat", "guid-100", 1)
+        result = process_messages(self.messages + [foreign], [MessageRelation(100, 1, "reply")])
+        self.assertEqual(result.threads, ())
+
 
 class AdapterAndStoreTests(unittest.TestCase):
     def setUp(self):
@@ -125,6 +139,10 @@ class AdapterAndStoreTests(unittest.TestCase):
                 processing_run_id INTEGER REFERENCES processing_run(id),
                 text_clean TEXT
             );
+            CREATE TABLE conversation_thread(
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL
+            );
             """
         )
         original_message_count = self.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0]
@@ -133,6 +151,8 @@ class AdapterAndStoreTests(unittest.TestCase):
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(processed_message)")}
         self.assertIn("image_count", columns)
         self.assertIn("local_hour", columns)
+        thread_columns = {row[1]: row for row in self.conn.execute("PRAGMA table_info(conversation_thread)")}
+        self.assertEqual(thread_columns["session_id"][3], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], original_message_count)
         self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 

@@ -31,10 +31,23 @@ class ProcessingStore:
         existing = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='processed_message'"
         ).fetchone()
+        needs_rebuild = False
         if existing is not None:
             columns = {row[1] for row in self.conn.execute("PRAGMA table_info(processed_message)")}
-            if not self._CURRENT_PROCESSED_COLUMNS.issubset(columns):
-                self._drop_derived_schema()
+            needs_rebuild = not self._CURRENT_PROCESSED_COLUMNS.issubset(columns)
+
+        thread_table = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_thread'"
+        ).fetchone()
+        if thread_table is not None:
+            session_column = next(
+                (row for row in self.conn.execute("PRAGMA table_info(conversation_thread)") if row[1] == "session_id"),
+                None,
+            )
+            needs_rebuild = needs_rebuild or session_column is None or bool(session_column[3])
+
+        if needs_rebuild:
+            self._drop_derived_schema()
         self.conn.executescript(self.schema_path.read_text(encoding="utf-8"))
 
     def _drop_derived_schema(self) -> None:

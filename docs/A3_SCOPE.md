@@ -21,7 +21,7 @@ A3 používá `sender_id`/participant identity z A2; nevytváří konkurenční 
 6. Same A2 projection + config produces the same derived logical structure.
 7. Session boundary defaults to a gap strictly greater than six hours.
 8. A missing timestamp produces no latency and is isolated from temporal session inference.
-9. Threads are created only from explicit source relations whose relation type is configured as a reply relation. Semantic topic inference is deferred.
+9. Threads are created only from explicit source relations whose relation type is configured as a reply relation. An explicit reply may span multiple temporal sessions; in that case the thread has no single `session_id`. Semantic topic inference is deferred.
 10. Missing attachment files remain represented and are counted; their parent message is never discarded.
 11. Local calendar fields are derived only when A2 provides the per-message timezone offset. If it is absent, local fields remain `NULL`.
 

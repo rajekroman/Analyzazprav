@@ -90,7 +90,7 @@ class Session:
 class Thread:
     id: int
     conversation_id: int
-    session_id: int
+    session_id: int | None
     message_ids: tuple[int, ...]
     method: str
     confidence: float
