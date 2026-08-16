@@ -55,6 +55,17 @@ A2 also consumes, when available:
 - `raw_payload`
 - `metadata`
 
+## Import and source identity
+
+A2 deliberately stores two different fingerprints in `import_run`:
+
+- `source_sha256` is the byte-level SHA-256 of the original A1 source (`manifest.source.sha256`); this is the authoritative bridge for A7 source reconciliation;
+- `source_fingerprint` identifies one concrete ingest representation and includes source SHA-256, A1 contract version, parser name and parser version.
+
+This distinction allows the same unchanged `chat.db` to be parsed again with a newer parser without pretending it is a different source file. The two import runs share `source_sha256` but have different `source_fingerprint` values and retain separate provenance rows.
+
+A7 should identify a staging run by `source_type + source_sha256 + parser_version` when a specific A1 export must be reconciled. It must not treat the ingest fingerprint as the raw source hash.
+
 ## Time normalization
 
 Canonical A2 time is `sent_at_utc_us`: Unix UTC microseconds stored as `INTEGER`.
@@ -122,6 +133,16 @@ A2 refuses canonical ingest when:
 - the actual JSONL message count disagrees with `manifest.counts.messages_seen`.
 
 A failed import is recorded as `failed`; it is not silently reported as complete.
+
+## Database migrations
+
+A2 uses append-only numbered migrations. Current chain:
+
+1. `001_initial.sql` — original canonical A2 schema;
+2. `002_a1_staging_contract.sql` — A1 source-record provenance and A2/A3 duplicate-responsibility split;
+3. `003_source_content_hash.sql` — explicit original-source SHA-256 for exact A7 reconciliation.
+
+Existing A2 databases are upgraded in place; migration tests verify canonical message/source rows survive the v1 → current upgrade.
 
 ## Downstream A2 views
 
