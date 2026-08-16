@@ -13,6 +13,9 @@ class AttachmentRecord:
     total_bytes: int | None
     source_path: str | None
     sha256: str | None = None
+    resolved_path: str | None = None
+    resolution_status: str | None = None
+    actual_bytes: int | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -21,11 +24,11 @@ class MessageRecord:
     source_message_id: str
     source_guid: str | None
     conversation_source_id: str
-    timestamp_raw: int | float | None
+    timestamp_raw: int | float | str | None
     timestamp_utc: str | None
     timestamp_precision: str | None
     sender_handle: str | None
-    is_from_me: bool
+    is_from_me: bool | None
     text: str | None
     raw_text: str | None
     text_source: str | None
