@@ -1,0 +1,42 @@
+name: A7 diagnostic
+
+on:
+  push:
+    branches:
+      - agent/a0-a7-vertical
+  pull_request:
+    paths:
+      - 'src/analyzazprav/qa/**'
+      - 'tests/test_a7_vertical.py'
+      - '.github/workflows/a7-diagnostic.yml'
+
+jobs:
+  golden-vertical:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - run: python -m pytest -q tests/test_a7_vertical.py::test_actual_a1_a2_a3_vertical_pipeline_passes_and_preserves_a2
+
+  corrupted-record-key:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - run: python -m pytest -q tests/test_a7_vertical.py::test_staging_validator_rejects_corrupted_imessage_source_record_key
+
+  dropped-membership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - run: python -m pytest -q tests/test_a7_vertical.py::test_vertical_validator_detects_dropped_a3_membership
