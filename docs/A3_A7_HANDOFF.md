@@ -37,10 +37,14 @@ A7 must verify all of the following:
 
 - every A2 participant used by the processed dataset belongs to exactly one current `resolved_participant` group;
 - every loaded A2 `participant_identity` is represented by one `participant_alias` with original `participant_id` + `participant_identity_id` provenance;
+- `participant_alias.participant_identity_id` resolves to the real A2 identity row;
+- the alias identity must belong to the same A2 `participant_id`; the DB trigger must reject an identity/participant mismatch;
 - multiple A2 participants explicitly marked `is_self=1` resolve to one self group with method `explicit_is_self_union_v1` and confidence `1.0`;
 - non-self participants are **not** merged merely because normalized `canonical_name` matches;
 - equal-name evidence produces only `participant_resolution_candidate` with method `normalized_canonical_name_candidate_v1` and confidence `0.35`;
-- `processed_message.resolved_sender_id` and `sender_run.resolved_participant_id` point to the derived person used by A4;
+- the in-memory `ProcessedMessage.resolved_sender_id` is persisted via `processed_message_resolved_sender`;
+- the in-memory `SenderRun.resolved_participant_id` is persisted via `sender_run_resolved_participant`;
+- `analysis_processed_messages_resolved_latest` and `analysis_sender_runs_resolved_latest` expose the resolved IDs without changing the integrated v4 base tables;
 - switching between two explicit aliases of the same resolved person does not create a new sender-run;
 - such an alias switch does not create a false `seconds_since_previous_other_sender` value;
 - A2 `participant` and `participant_identity` rows are byte/logically unchanged before and after A3.
@@ -61,11 +65,24 @@ For unchanged A2 projection + config, two runs must produce the same logical val
 
 Run IDs and wall-clock timestamps are excluded from logical equality.
 
-## 5. Immutable processing history
+## 5. Immutable processing history and v4 → v5 upgrade
 
-A3 appends processing runs. A new run must not delete or replace an earlier completed run. Participant-resolution rows are processing-run scoped just like messages/runs/sessions/threads.
+A3 appends processing runs. A new run must not delete or replace an earlier completed run.
 
-Only obsolete incompatible A3-derived schemas may be rebuilt. A2 tables must never be dropped or rewritten.
+The A3 v5 participant-resolution schema is **additive**. Integrated A3 v4 is a supported upgrade source and MUST NOT be treated as an obsolete draft merely because v5 sidecar tables are absent.
+
+A7 release-blocking fixture must create at least one completed v4 `processing_run` with persisted v4 `processed_message` data, run the v5 initialization, and prove all of the following:
+
+- the existing v4 `processing_run` row is byte/logically unchanged;
+- its existing `processed_message` rows are byte/logically unchanged;
+- calling v5 initialization repeatedly is idempotent;
+- v5 creates `resolved_participant`, `resolved_participant_member`, `participant_alias`, `participant_resolution_candidate`, `sender_run_resolved_participant` and `processed_message_resolved_sender` without rebuilding v4 tables;
+- historical v4 rows remain queryable through `analysis_processed_messages_latest`;
+- the resolved-person view returns `NULL` for an old v4 message that naturally has no v5 sidecar mapping;
+- existing `idx_processed_message_utc_period` and `idx_processed_message_local_period` indexes remain present;
+- `PRAGMA foreign_key_check` remains empty.
+
+Only an actually incompatible **pre-v4 draft A3 schema** may be rebuilt. A2 tables must never be dropped or rewritten.
 
 ## 6. Ordering and unknown timestamps
 
@@ -111,13 +128,26 @@ processed_message.membership_id
 → message_source / source_record_key
 ```
 
-Participant evidence must similarly resolve through:
+Resolved participant evidence must resolve through:
 
 ```text
-processed_message.resolved_sender_id
+processed_message
+→ processed_message_resolved_sender
+→ resolved_participant
 → resolved_participant_member
 → participant
-→ participant_identity / participant_alias
+→ participant_alias
+→ participant_identity
+```
+
+Sender-run evidence must likewise resolve through:
+
+```text
+sender_run
+→ sender_run_resolved_participant
+→ resolved_participant
+→ resolved_participant_member
+→ participant
 ```
 
 ## 14. Real vertical contract tests
@@ -130,7 +160,10 @@ Release-blocking coverage includes:
 4. participant alias union for explicit self identities;
 5. equal-name non-self candidate without merge;
 6. resolved sender-run and response-latency semantics;
-7. no A2 source/canonical mutation.
+7. alias identity FK + participant-match enforcement;
+8. non-destructive integrated A3 v4 → v5 sidecar initialization;
+9. restored/retained period indexes;
+10. no A2 source/canonical mutation.
 
 ## 15. Acceptance evidence
 
@@ -146,6 +179,7 @@ A7 handoff is green only when it records:
 8. foreign-key/integrity PASS;
 9. no A2 mutation;
 10. deterministic logical rerun PASS;
-11. immutable previous processing-run retention PASS.
+11. immutable previous processing-run retention PASS;
+12. non-destructive integrated A3 v4 → v5 sidecar upgrade PASS.
 
 No AI/LLM output is required to validate A3.
