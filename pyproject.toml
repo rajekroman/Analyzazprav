@@ -3,7 +3,10 @@ name = "analyzazprav"
 version = "0.1.0"
 description = "Local-first message import, normalization and analysis pipeline"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pandas>=3.0,<4",
+    "streamlit>=1.61,<2",
+]
 
 [project.scripts]
 az-import = "analiza_zprav_a1.cli:main"
@@ -20,4 +23,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
