@@ -39,6 +39,10 @@ def _base64_payload_size(value: Any) -> int | None:
         return None
 
 
+def _positive_source_flag(value: Any) -> bool:
+    return value not in (None, "", 0, False, "0")
+
+
 def project_apple_event_metadata(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a conservative structured projection of Apple message metadata.
 
@@ -50,11 +54,16 @@ def project_apple_event_metadata(raw_payload: Mapping[str, Any]) -> dict[str, An
 
     metadata: dict[str, Any] = {}
 
-    associated: dict[str, Any] = {}
-    for field in _ASSOCIATED_MESSAGE_FIELDS:
-        if field in raw_payload and raw_payload[field] is not None:
-            associated[field] = raw_payload[field]
-    if associated:
+    # Apple schemas may expose numeric associated-message columns with default
+    # zero values even for ordinary messages. Require an actual target GUID
+    # before creating the structured association projection; all raw defaults
+    # remain available in raw_payload regardless.
+    associated_guid = raw_payload.get("associated_message_guid")
+    if associated_guid not in (None, ""):
+        associated: dict[str, Any] = {}
+        for field in _ASSOCIATED_MESSAGE_FIELDS:
+            if field in raw_payload and raw_payload[field] is not None:
+                associated[field] = raw_payload[field]
         metadata["apple_associated_message"] = associated
 
     edit_state: dict[str, Any] = {}
@@ -69,9 +78,12 @@ def project_apple_event_metadata(raw_payload: Mapping[str, Any]) -> dict[str, An
         if utc_value is not None:
             edit_state[f"{field}_utc"] = utc_value
 
+    # Do not create edit metadata merely because a schema exposes a default 0
+    # flag. A positive source flag is evidence; the exact zero remains raw.
     for field in _EDIT_FLAG_FIELDS:
-        if field in raw_payload and raw_payload[field] is not None:
-            edit_state[f"{field}_raw"] = raw_payload[field]
+        raw_value = raw_payload.get(field)
+        if _positive_source_flag(raw_value):
+            edit_state[f"{field}_raw"] = raw_value
 
     if "edit_history" in raw_payload and raw_payload["edit_history"] is not None:
         edit_state["edit_history_present"] = True
