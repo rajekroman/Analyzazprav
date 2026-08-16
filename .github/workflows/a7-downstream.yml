@@ -1,0 +1,150 @@
+name: A7 downstream validation
+
+on:
+  pull_request:
+    paths:
+      - 'src/analyzazprav/qa/**'
+      - 'tests/test_a7_downstream.py'
+      - 'tools/a7_downstream/**'
+      - 'docs/A7_QA.md'
+      - '.github/workflows/a7-downstream.yml'
+  push:
+    branches:
+      - main
+      - agent/a7-downstream-validation
+    paths:
+      - 'src/analyzazprav/qa/**'
+      - 'tests/test_a7_downstream.py'
+      - 'tools/a7_downstream/**'
+      - 'docs/A7_QA.md'
+      - '.github/workflows/a7-downstream.yml'
+
+jobs:
+  core-a7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e . pytest
+      - name: Run authoritative A1-A3 plus A7 regression suite
+        run: python -m pytest -q
+      - name: Write core A7 report
+        run: printf '%s\n' '{"schema_version":1,"module":"core","status":"PASS","verdict":"VALID"}' > a7-core-report.json
+      - name: Upload core report
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-core-report
+          path: a7-core-report.json
+
+  a4-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout A7
+        uses: actions/checkout@v4
+      - name: Checkout pinned A4
+        uses: actions/checkout@v4
+        with:
+          ref: 2ea4dad75bbac310183cf0c0728d387a02d35688
+          path: a4-under-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run actual A4 through independent A7 oracle
+        env:
+          PYTHONPATH: ${{ github.workspace }}/a4-under-test/src:${{ github.workspace }}
+        run: python tools/a7_downstream/a4_live.py --report a7-a4-report.json
+      - name: Upload A4 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a4-report
+          path: a7-a4-report.json
+          if-no-files-found: ignore
+
+  a5-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout A7
+        uses: actions/checkout@v4
+      - name: Checkout pinned A5
+        uses: actions/checkout@v4
+        with:
+          ref: c1c5a0e9d5ec1933370054404bf3612f53f5a63e
+          path: a5-under-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run actual A5 through independent evidence audit
+        env:
+          PYTHONPATH: ${{ github.workspace }}/a5-under-test/src:${{ github.workspace }}
+        run: python tools/a7_downstream/a5_live.py --report a7-a5-report.json
+      - name: Upload A5 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a5-report
+          path: a7-a5-report.json
+          if-no-files-found: ignore
+
+  a6-live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout A7
+        uses: actions/checkout@v4
+      - name: Checkout pinned A6
+        uses: actions/checkout@v4
+        with:
+          ref: 59028e1c9d93718105051de23db3329e5ebe0c0a
+          path: a6-under-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install A6 read-model dependency
+        run: python -m pip install pandas
+      - name: Run A6 against production A2 v6 fixture
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/a6-under-test:${{ github.workspace }}
+        run: python tools/a7_downstream/a6_live.py --a6-root a6-under-test --report a7-a6-report.json
+      - name: Upload A6 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-a6-report
+          path: a7-a6-report.json
+          if-no-files-found: ignore
+
+  release-verdict:
+    if: always()
+    needs: [core-a7, a4-live, a5-live, a6-live]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download component reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: a7-*-report
+          path: a7-reports
+          merge-multiple: true
+      - name: Aggregate release verdict
+        run: >-
+          python tools/a7_downstream/release_verdict.py
+          --reports a7-reports
+          --report a7-release-verdict.json
+          --core-result '${{ needs.core-a7.result }}'
+          --a4-result '${{ needs.a4-live.result }}'
+          --a5-result '${{ needs.a5-live.result }}'
+          --a6-result '${{ needs.a6-live.result }}'
+      - name: Upload release verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-release-verdict
+          path: a7-release-verdict.json
+          if-no-files-found: ignore
