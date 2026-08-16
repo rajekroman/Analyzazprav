@@ -19,6 +19,19 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
         db = Path(tmp.name) / "a4.sqlite3"
         with sqlite3.connect(db) as conn:
             conn.executescript("""
+                CREATE TABLE reconciliation_src (
+                    conversation_id INTEGER,
+                    membership_count_delta INTEGER,
+                    invalid_response_session_count INTEGER,
+                    invalid_silence_session_count INTEGER,
+                    invalid_event_session_count INTEGER,
+                    uses_latest_processing_run INTEGER,
+                    reconciliation_ok INTEGER,
+                    a4_source_membership_count INTEGER,
+                    sender_accounted_membership_count INTEGER
+                );
+                CREATE VIEW analysis_a4_reconciliation AS SELECT * FROM reconciliation_src;
+
                 CREATE TABLE event_src (
                     conversation_id INTEGER, session_id INTEGER, event_type TEXT, score REAL,
                     start_at_utc_us INTEGER, end_at_utc_us INTEGER,
@@ -34,15 +47,34 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
                 CREATE VIEW analysis_a4_changes AS SELECT * FROM change_src;
 
                 CREATE TABLE topic_src (
-                    conversation_id INTEGER, topic_key TEXT, method TEXT, normalized_phrase TEXT,
-                    ngram_size INTEGER, document_frequency INTEGER,
-                    document_frequency_ratio REAL, occurrence_count INTEGER,
-                    participant_count INTEGER, salience REAL,
-                    first_period_date TEXT, last_period_date TEXT,
+                    analytics_run_id INTEGER,
+                    conversation_id INTEGER,
+                    topic_key TEXT,
+                    method TEXT,
+                    normalized_phrase TEXT,
+                    ngram_size INTEGER,
+                    document_frequency INTEGER,
+                    document_frequency_ratio REAL,
+                    occurrence_count INTEGER,
+                    participant_count INTEGER,
+                    salience REAL,
+                    first_period_date TEXT,
+                    last_period_date TEXT,
                     source_message_ids_json TEXT
                 );
                 CREATE VIEW analysis_a4_topics AS SELECT * FROM topic_src;
+
+                CREATE TABLE topic_evidence_src (
+                    analytics_run_id INTEGER,
+                    conversation_id INTEGER,
+                    topic_key TEXT,
+                    message_id INTEGER
+                );
+                CREATE VIEW analysis_a4_topic_evidence AS SELECT * FROM topic_evidence_src;
             """)
+            conn.execute(
+                "INSERT INTO reconciliation_src VALUES (7,0,0,0,0,1,1,3,3)"
+            )
             conn.execute(
                 "INSERT INTO event_src VALUES (7,3,'conflict',0.8,1000000,3000000,?,?)",
                 ('{"negative":0.7}', '[10,11]'),
@@ -52,18 +84,26 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
                 ('[11,12]',),
             )
             conn.execute(
-                "INSERT INTO topic_src VALUES (7,'t1','lexical_ngram_v1','meeting',1,4,0.2,5,2,3.5,'2025-05-01','2025-05-10',?)",
+                "INSERT INTO topic_src VALUES (9,7,'t1','lexical_ngram_v1','meeting',1,4,0.2,5,2,3.5,'2025-05-01','2025-05-10',?)",
                 ('[10,12]',),
+            )
+            conn.executemany(
+                "INSERT INTO topic_evidence_src VALUES (9,7,'t1',?)",
+                [(10,), (12,)],
             )
         return db
 
     def test_reads_published_views_and_preserves_evidence(self):
         source = A4SQLiteCandidateSource(self.make_db())
         candidates = source.candidates("7")
-        self.assertEqual([c.candidate_type for c in candidates], ["conflict", "lexical_topic", "change_point"])
+        self.assertEqual(
+            [c.candidate_type for c in candidates],
+            ["conflict", "lexical_topic", "change_point"],
+        )
         by_type = {c.candidate_type: c for c in candidates}
         self.assertEqual(by_type["conflict"].evidence_message_ids, ("10", "11"))
         self.assertEqual(by_type["change_point"].metrics_during["robust_z_score"], 3.1)
+        self.assertEqual(by_type["lexical_topic"].evidence_message_ids, ("10", "12"))
         self.assertEqual(by_type["lexical_topic"].metadata["method"], "lexical_ngram_v1")
         self.assertEqual(by_type["lexical_topic"].metadata["normalized_phrase"], "meeting")
 
@@ -75,7 +115,9 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
     def test_duplicate_source_message_ids_fail_closed(self):
         db = self.make_db()
         with sqlite3.connect(db) as conn:
-            conn.execute("UPDATE event_src SET source_message_ids_json='[10,10]' WHERE session_id=3")
+            conn.execute(
+                "UPDATE event_src SET source_message_ids_json='[10,10]' WHERE session_id=3"
+            )
         with self.assertRaises(A4SQLiteSourceError):
             A4SQLiteCandidateSource(db).conflicts("7")
 
@@ -85,6 +127,47 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
             conn.execute("UPDATE event_src SET factors_json='{' WHERE session_id=3")
         with self.assertRaises(A4SQLiteSourceError):
             A4SQLiteCandidateSource(db).conflicts("7")
+
+    def test_unreconciled_a4_fails_closed(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE reconciliation_src SET reconciliation_ok=0 WHERE conversation_id=7"
+            )
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).candidates("7")
+
+    def test_stale_a3_processing_run_fails_closed(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE reconciliation_src SET uses_latest_processing_run=0 WHERE conversation_id=7"
+            )
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).change_points("7")
+
+    def test_missing_reconciliation_view_fails_closed(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("DROP VIEW analysis_a4_reconciliation")
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).conflicts("7")
+
+    def test_topic_evidence_mismatch_fails_closed(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "DELETE FROM topic_evidence_src WHERE analytics_run_id=9 AND message_id=12"
+            )
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).topics("7")
+
+    def test_missing_topic_evidence_view_fails_closed(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("DROP VIEW analysis_a4_topic_evidence")
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).topics("7")
 
 
 if __name__ == "__main__":
