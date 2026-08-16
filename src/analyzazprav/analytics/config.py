@@ -11,6 +11,9 @@ class AnalyticsConfig:
     rapid_exchange_seconds: int = 5 * 60
     responsiveness_reference_seconds: int = 6 * 60 * 60
     post_silence_reference_seconds: int = 18 * 60 * 60
+    long_silence_seconds: int = 24 * 60 * 60
+    night_start_hour: int = 0
+    night_end_hour: int = 6
     conflict_threshold: float = 0.55
     change_baseline_window_days: int = 28
     change_min_baseline_days: int = 7
@@ -63,6 +66,14 @@ class AnalyticsConfig:
             raise ValueError("responsiveness_reference_seconds must be positive")
         if self.post_silence_reference_seconds <= 0:
             raise ValueError("post_silence_reference_seconds must be positive")
+        if self.long_silence_seconds <= 0:
+            raise ValueError("long_silence_seconds must be positive")
+        if not 0 <= self.night_start_hour <= 23:
+            raise ValueError("night_start_hour must be between 0 and 23")
+        if not 0 <= self.night_end_hour <= 23:
+            raise ValueError("night_end_hour must be between 0 and 23")
+        if self.night_start_hour == self.night_end_hour:
+            raise ValueError("night interval cannot cover zero or twenty-four hours")
         if not 0 <= self.conflict_threshold <= 1:
             raise ValueError("conflict_threshold must be between 0 and 1")
         if self.change_baseline_window_days < self.change_min_baseline_days:
