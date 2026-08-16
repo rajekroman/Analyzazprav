@@ -23,6 +23,7 @@ def make_chat_db(path: Path):
           thread_originator_guid TEXT
         );
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
         CREATE TABLE attachment (
           ROWID INTEGER PRIMARY KEY,
           filename TEXT,
@@ -34,12 +35,15 @@ def make_chat_db(path: Path):
         """
     )
     conn.execute("INSERT INTO handle VALUES(1, '+420123456789')")
+    conn.execute("INSERT INTO handle VALUES(2, '+420987654321')")
     conn.execute("INSERT INTO chat VALUES(7, 'iMessage;-;+420123456789')")
     conn.execute(
         "INSERT INTO message VALUES(10, 'GUID-10', 'Ahoj', NULL, 1, ?, 0, 'iMessage', NULL)",
         (800_000_000 * 1_000_000_000,),
     )
     conn.execute("INSERT INTO chat_message_join VALUES(7,10)")
+    conn.execute("INSERT INTO chat_handle_join VALUES(7,1)")
+    conn.execute("INSERT INTO chat_handle_join VALUES(7,2)")
     conn.execute(
         "INSERT INTO attachment VALUES(22, '~/Library/Messages/Attachments/a.jpg', 'image/jpeg', 'a.jpg', 1234)"
     )
@@ -75,6 +79,8 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     assert record["source_guid"] == "GUID-10"
     assert record["conversation_source_id"] == "7"
     assert record["sender_handle"] == "+420123456789"
+    assert record["conversation_participant_handles"] == ["+420123456789", "+420987654321"]
+    assert record["conversation_metadata"]["guid"] == "iMessage;-;+420123456789"
     assert record["text"] == "Ahoj"
     assert record["raw_text"] == "Ahoj"
     assert record["text_source"] == "text"
