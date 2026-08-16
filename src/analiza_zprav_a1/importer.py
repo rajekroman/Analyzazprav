@@ -12,18 +12,19 @@ from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
+from .reconciliation import reconcile_bundle, write_reconciliation
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.4.0"
+IMESSAGE_PARSER_VERSION = "0.5.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
-IMAZING_PARSER_VERSION = "0.1.0"
+IMAZING_PARSER_VERSION = "0.2.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
 GENERIC_JSON_PARSER_NAME = "generic-message-json"
-GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
+GENERIC_STRUCTURED_PARSER_VERSION = "0.2.0"
 GENERIC_TEXT_PARSER_NAME = "generic-message-text"
-GENERIC_TEXT_PARSER_VERSION = "0.1.0"
+GENERIC_TEXT_PARSER_VERSION = "0.2.0"
 
 
 @dataclass(slots=True)
@@ -33,9 +34,13 @@ class ImportStats:
     attachments_seen: int
     attachments_resolved: int
     attachments_missing: int
+    unsupported: int
+    duplicates: int
     errors: int
     output_jsonl: str
     errors_jsonl: str
+    reconciliation_json: str
+    reconciliation_ok: bool
     manifest: str
     source_sha256: str
 
@@ -74,6 +79,13 @@ def _record_key_manifest(source_type: str) -> dict[str, str]:
     }
 
 
+def _write_manifest(path: Path, manifest: dict[str, object]) -> None:
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_records(
     records: Iterable[MessageRecord],
     *,
@@ -86,14 +98,16 @@ def _write_records(
     source_hash_override: str | None = None,
     source_name_override: str | None = None,
     source_metadata: Mapping[str, object] | None = None,
+    reconciliation_sqlite_snapshot: Path | None = None,
 ) -> ImportStats:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_jsonl = output_dir / "messages.jsonl"
     manifest_path = output_dir / "manifest.json"
     errors_jsonl = output_dir / "errors.jsonl"
+    reconciliation_path = output_dir / "reconciliation.json"
     source_hash = source_hash_override or sha256_file(source_path)
 
-    seen = emitted = attachments = resolved = missing = errors = 0
+    seen = emitted = attachments = resolved = missing = message_errors = 0
     with (
         output_jsonl.open("w", encoding="utf-8", newline="\n") as stream,
         errors_jsonl.open("w", encoding="utf-8", newline="\n") as error_stream,
@@ -128,8 +142,9 @@ def _write_records(
                 stream.write("\n")
                 emitted += 1
             except Exception as exc:
-                errors += 1
+                message_errors += 1
                 error_payload = {
+                    "scope": "message",
                     "source_message_id": record.source_message_id,
                     "source_guid": record.source_guid,
                     "conversation_source_id": record.conversation_source_id,
@@ -149,7 +164,7 @@ def _write_records(
     if source_metadata:
         source_manifest.update(source_metadata)
 
-    manifest = {
+    manifest: dict[str, object] = {
         "contract_version": A1_CONTRACT_VERSION,
         "source": source_manifest,
         "parser": {"name": parser_name, "version": parser_version},
@@ -157,20 +172,64 @@ def _write_records(
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
         },
-        "outputs": {"messages": output_jsonl.name, "errors": errors_jsonl.name},
+        "outputs": {
+            "messages": output_jsonl.name,
+            "errors": errors_jsonl.name,
+            "reconciliation": reconciliation_path.name,
+        },
         "counts": {
             "messages_seen": seen,
             "messages_emitted": emitted,
             "attachments_seen": attachments,
             "attachments_resolved": resolved,
             "attachments_missing": missing,
-            "errors": errors,
+            "unsupported": 0,
+            "duplicates": 0,
+            "message_errors": message_errors,
+            "reconciliation_errors": 0,
+            "errors": message_errors,
         },
     }
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    _write_manifest(manifest_path, manifest)
+
+    report = reconcile_bundle(
+        output_dir,
+        source_path,
+        sqlite_snapshot_path=reconciliation_sqlite_snapshot,
     )
+    unsupported = len(report.get("unsupported_records") or [])
+    duplicates = len(report.get("duplicate_records") or [])
+    counts = manifest["counts"]
+    assert isinstance(counts, dict)
+    counts["unsupported"] = unsupported
+    counts["duplicates"] = duplicates
+
+    reconciliation_errors = 0
+    if not report["ok"]:
+        reconciliation_errors = 1
+        error_payload = {
+            "scope": "reconciliation",
+            "error_type": "ReconciliationError",
+            "error": "A1 source reconciliation failed",
+            "failed_checks": report.get("failed_checks", []),
+        }
+        with errors_jsonl.open("a", encoding="utf-8", newline="\n") as error_stream:
+            error_stream.write(
+                json.dumps(error_payload, ensure_ascii=False, sort_keys=True)
+            )
+            error_stream.write("\n")
+
+    counts["reconciliation_errors"] = reconciliation_errors
+    counts["errors"] = message_errors + reconciliation_errors
+    _write_manifest(manifest_path, manifest)
+
+    if reconciliation_errors:
+        report = reconcile_bundle(
+            output_dir,
+            source_path,
+            sqlite_snapshot_path=reconciliation_sqlite_snapshot,
+        )
+    write_reconciliation(report, reconciliation_path)
 
     return ImportStats(
         messages_seen=seen,
@@ -178,9 +237,13 @@ def _write_records(
         attachments_seen=attachments,
         attachments_resolved=resolved,
         attachments_missing=missing,
-        errors=errors,
+        unsupported=unsupported,
+        duplicates=duplicates,
+        errors=message_errors + reconciliation_errors,
         output_jsonl=str(output_jsonl),
         errors_jsonl=str(errors_jsonl),
+        reconciliation_json=str(reconciliation_path),
+        reconciliation_ok=bool(report["ok"]),
         manifest=str(manifest_path),
         source_sha256=source_hash,
     )
@@ -198,7 +261,7 @@ def import_imessage(
 
     # Never hash the live main database file while parsing a potentially
     # different logical state from its WAL. SQLite backup produces one immutable
-    # logical snapshot; A1 both hashes and parses that exact snapshot.
+    # logical snapshot; A1 hashes, parses and reconciles that exact snapshot.
     with consistent_sqlite_snapshot(chat_db) as snapshot:
         snapshot_hash = sha256_file(snapshot)
         return _write_records(
@@ -215,6 +278,7 @@ def import_imessage(
                 "snapshot_method": "sqlite_online_backup_v1",
                 "snapshot_includes_committed_wal": True,
             },
+            reconciliation_sqlite_snapshot=snapshot,
         )
 
 
