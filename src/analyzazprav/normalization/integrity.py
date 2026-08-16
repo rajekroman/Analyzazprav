@@ -14,6 +14,8 @@ _REQUIRED_TABLES = {
     "message_source",
     "message_conversation",
     "message_source_conversation",
+    "message_relation",
+    "message_relation_source",
     "attachment",
     "message_attachment",
     "message_attachment_occurrence",
@@ -24,8 +26,10 @@ _REQUIRED_VIEWS = {
     "analysis_messages",
     "analysis_conversations",
     "analysis_attachments",
+    "analysis_attachment_sources",
     "analysis_message_sources",
     "analysis_message_memberships",
+    "analysis_message_relation_sources",
 }
 
 
@@ -71,13 +75,12 @@ def _record_mismatch(
 
 
 def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
-    """Return structural SQLite checks plus A2 schema-v5 semantic invariants.
+    """Return structural SQLite checks plus current A2 semantic invariants.
 
     SQLite foreign keys prove that referenced rows exist. They do not prove that
-    a source relation and a canonical membership describe the *same* message or
-    conversation, nor that every canonical record has the provenance/membership
-    required by the project contract. These checks close that gap without
-    performing any repair or fuzzy reconciliation.
+    source provenance and canonical memberships/relations describe the same
+    logical records, nor that analytical views cover every authoritative row.
+    These checks close that gap without performing repair or fuzzy inference.
     """
 
     base = db.integrity_report()
@@ -102,7 +105,7 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
                 "code": "A2_REQUIRED_TABLES_MISSING",
                 "count": len(missing_tables),
                 "items": missing_tables,
-                "detail": "Required schema-v5 tables are missing.",
+                "detail": "Required current A2 tables are missing.",
             }
         )
     if missing_views:
@@ -111,7 +114,7 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
                 "code": "A2_REQUIRED_VIEWS_MISSING",
                 "count": len(missing_views),
                 "items": missing_views,
-                "detail": "Required schema-v5 analytical views are missing.",
+                "detail": "Required current A2 analytical views are missing.",
             }
         )
 
@@ -298,6 +301,65 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
                 ),
                 detail="conversation_source source SHA disagrees with its import_run raw-source SHA.",
             )
+
+            _record_count_error(
+                semantic_errors,
+                checks,
+                key="resolved_relation_source_message_mismatches",
+                code="RELATION_SOURCE_MESSAGE_MISMATCH",
+                count=_scalar(
+                    db,
+                    """
+                    SELECT COUNT(*)
+                    FROM message_relation_source mrs
+                    JOIN message_source ms ON ms.id = mrs.message_source_id
+                    JOIN message_relation mr ON mr.id = mrs.canonical_relation_id
+                    WHERE mrs.canonical_relation_id IS NOT NULL
+                      AND ms.message_id <> mr.source_message_id
+                    """,
+                ),
+                detail="Resolved source relation is linked to a canonical relation owned by a different source message.",
+            )
+            _record_count_error(
+                semantic_errors,
+                checks,
+                key="resolved_relation_type_mismatches",
+                code="RELATION_SOURCE_TYPE_MISMATCH",
+                count=_scalar(
+                    db,
+                    """
+                    SELECT COUNT(*)
+                    FROM message_relation_source mrs
+                    JOIN message_relation mr ON mr.id = mrs.canonical_relation_id
+                    WHERE mrs.canonical_relation_id IS NOT NULL
+                      AND mrs.relation_type <> mr.relation_type
+                    """,
+                ),
+                detail="Resolved source relation type disagrees with its canonical message_relation type.",
+            )
+            _record_count_error(
+                semantic_errors,
+                checks,
+                key="resolved_guid_relation_target_mismatches",
+                code="RELATION_SOURCE_TARGET_MISMATCH",
+                count=_scalar(
+                    db,
+                    """
+                    SELECT COUNT(*)
+                    FROM message_relation_source mrs
+                    JOIN message_relation mr ON mr.id = mrs.canonical_relation_id
+                    JOIN message target ON target.id = mr.target_message_id
+                    WHERE mrs.canonical_relation_id IS NOT NULL
+                      AND mrs.target_identifier_type = 'guid'
+                      AND (
+                          target.canonical_guid IS NOT mrs.target_identifier_value
+                          OR target.service IS NOT mrs.target_service
+                      )
+                    """,
+                ),
+                detail="Resolved GUID source relation disagrees with the canonical target GUID/service identity.",
+            )
+
             _record_count_error(
                 semantic_errors,
                 checks,
@@ -391,7 +453,9 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
             message_count = _scalar(db, "SELECT COUNT(*) FROM message")
             membership_count = _scalar(db, "SELECT COUNT(*) FROM message_conversation")
             occurrence_count = _scalar(db, "SELECT COUNT(*) FROM message_attachment_occurrence")
+            attachment_source_count = _scalar(db, "SELECT COUNT(*) FROM attachment_source")
             source_count = _scalar(db, "SELECT COUNT(*) FROM message_source")
+            relation_source_count = _scalar(db, "SELECT COUNT(*) FROM message_relation_source")
             conversation_count = _scalar(db, "SELECT COUNT(*) FROM conversation")
 
             _record_mismatch(
@@ -433,6 +497,15 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
             _record_mismatch(
                 semantic_errors,
                 checks,
+                key="analysis_attachment_sources_vs_sources",
+                code="ANALYSIS_ATTACHMENT_SOURCES_COUNT_MISMATCH",
+                actual=_scalar(db, "SELECT COUNT(*) FROM analysis_attachment_sources"),
+                expected=attachment_source_count,
+                detail="analysis_attachment_sources must expose every attachment_source provenance row.",
+            )
+            _record_mismatch(
+                semantic_errors,
+                checks,
                 key="analysis_message_sources_vs_sources",
                 code="ANALYSIS_MESSAGE_SOURCES_COUNT_MISMATCH",
                 actual=_scalar(db, "SELECT COUNT(*) FROM analysis_message_sources"),
@@ -450,6 +523,15 @@ def full_integrity_report(db: CanonicalDatabase) -> dict[str, Any]:
                 ),
                 expected=membership_count,
                 detail="analysis_message_memberships must cover every canonical membership.",
+            )
+            _record_mismatch(
+                semantic_errors,
+                checks,
+                key="analysis_relation_sources_vs_sources",
+                code="ANALYSIS_RELATION_SOURCES_COUNT_MISMATCH",
+                actual=_scalar(db, "SELECT COUNT(*) FROM analysis_message_relation_sources"),
+                expected=relation_source_count,
+                detail="analysis_message_relation_sources must expose every message_relation_source provenance row.",
             )
         except sqlite3.Error as exc:
             semantic_errors.append(

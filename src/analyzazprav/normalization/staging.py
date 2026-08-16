@@ -15,6 +15,12 @@ from .membership import (
     link_message_conversation,
     message_source_pk,
 )
+from .relations import (
+    record_apple_associated_message,
+    record_source_relation,
+    resolve_pending_relation_sources,
+    resolve_source_relation,
+)
 
 SUPPORTED_A1_CONTRACT_VERSIONS = {"1"}
 
@@ -69,6 +75,7 @@ class StagingIngestResult:
     attachments: int = 0
     relations: int = 0
     conversation_relations: int = 0
+    relation_sources: int = 0
 
 
 def iso_utc_to_unix_us(value: str | None) -> int | None:
@@ -230,8 +237,9 @@ def ingest_a1_staging_bundle(
     """Ingest an A1 ``manifest.json`` + ``messages.jsonl`` staging bundle.
 
     A1 remains source extraction only. A2 owns canonical entities and preserves
-    every source message occurrence, every source conversation relation and every
-    attachment occurrence without relying on database-local ROWIDs as global IDs.
+    every source message occurrence, every source conversation relation, every
+    source-evidenced relation and every attachment occurrence without relying on
+    database-local ROWIDs as global IDs.
 
     The audit ``import_run`` is committed first. All canonical/source writes for
     a non-idempotent run are then one atomic SQLite transaction: either the whole
@@ -285,7 +293,8 @@ def ingest_a1_staging_bundle(
 
     atomic_conn = _start_atomic_import(db)
     message_count = attachment_count = relation_count = conversation_relation_count = 0
-    pending_relations: list[tuple[int, str, str | None]] = []
+    relation_source_count = 0
+    pending_relation_source_ids: list[int] = []
 
     try:
         for record in _load_json_lines(messages_path):
@@ -408,6 +417,15 @@ def ingest_a1_staging_bundle(
                 import_run_id=run.id,
                 source_record_key=source_record_key,
             )
+            associated_relation_source_id = record_apple_associated_message(
+                db,
+                message_source_id=source_pk,
+                metadata=metadata,
+                target_service=None if service is None else str(service),
+            )
+            if associated_relation_source_id is not None:
+                relation_source_count += 1
+
             for position, (
                 conversation_id,
                 conversation_source_pk,
@@ -465,9 +483,22 @@ def ingest_a1_staging_bundle(
 
             reply_to_guid = record.get("reply_to_guid")
             if reply_to_guid:
-                pending_relations.append(
-                    (message_id, str(reply_to_guid), None if service is None else str(service))
+                relation_source_id = record_source_relation(
+                    db,
+                    message_source_id=source_pk,
+                    relation_type="reply_to",
+                    target_identifier_type="guid",
+                    target_identifier_value=str(reply_to_guid),
+                    target_service=None if service is None else str(service),
+                    position=0,
+                    metadata={
+                        "source": "a1.reply_to_guid",
+                        "source_field": "reply_to_guid",
+                        "target_guid": str(reply_to_guid),
+                    },
                 )
+                pending_relation_source_ids.append(relation_source_id)
+                relation_source_count += 1
 
         expected_messages = counts.get("messages_seen")
         if expected_messages is not None and int(expected_messages) != message_count:
@@ -480,17 +511,15 @@ def ingest_a1_staging_bundle(
                 f"A1 manifest attachments_seen={expected_attachments} but JSONL contains {attachment_count} attachment records"
             )
 
-        for source_message_pk, reply_guid, service in pending_relations:
-            target_message_pk = db.find_message_by_guid(reply_guid, service)
-            if target_message_pk is None:
-                continue
-            db.add_relation(
-                source_message_pk,
-                target_message_pk,
-                "reply_to",
-                {"source": "a1.reply_to_guid", "target_guid": reply_guid},
-            )
-            relation_count += 1
+        for relation_source_id in pending_relation_source_ids:
+            if resolve_source_relation(db, relation_source_id):
+                relation_count += 1
+
+        # A target may arrive in a later source snapshot/parser run. Reconcile
+        # older unresolved source facts only from exact source identifiers; never
+        # infer a relation from time/text similarity. Source-specific identifiers
+        # such as Apple associated-message targets remain unresolved by design.
+        resolve_pending_relation_sources(db)
 
         db.finish_import(
             run.id,
@@ -498,6 +527,7 @@ def ingest_a1_staging_bundle(
                 "messages": message_count,
                 "attachments": attachment_count,
                 "relations": relation_count,
+                "relation_sources": relation_source_count,
                 "conversation_relations": conversation_relation_count,
             },
         )
@@ -514,6 +544,7 @@ def ingest_a1_staging_bundle(
                 "messages": message_count,
                 "attachments": attachment_count,
                 "relations": relation_count,
+                "relation_sources": relation_source_count,
                 "conversation_relations": conversation_relation_count,
             },
         )
@@ -526,4 +557,5 @@ def ingest_a1_staging_bundle(
         attachments=attachment_count,
         relations=relation_count,
         conversation_relations=conversation_relation_count,
+        relation_sources=relation_source_count,
     )
