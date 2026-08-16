@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..apple_time import apple_timestamp_precision, apple_timestamp_to_iso
+from ..attachment_reconciliation import ATTACHMENT_RELATION_PAYLOAD_KEY
 from ..jsonsafe import json_safe
 from ..models import AttachmentRecord, ConversationSourceRecord, MessageRecord
 from ..text_decode import decode_attributed_body
@@ -347,17 +348,36 @@ class IMessageParser:
             return []
         rows = conn.execute(
             """
-            SELECT a.*, a.ROWID AS _attachment_rowid
+            SELECT maj.ROWID AS _relation_rowid,
+                   maj.message_id AS _relation_message_id,
+                   maj.attachment_id AS _relation_attachment_id,
+                   a.*, a.ROWID AS _attachment_rowid
             FROM message_attachment_join maj
             JOIN attachment a ON a.ROWID=maj.attachment_id
             WHERE maj.message_id=?
-            ORDER BY a.ROWID
+            ORDER BY a.ROWID, maj.ROWID
             """,
             (message_id,),
-        )
+        ).fetchall()
         records: list[AttachmentRecord] = []
-        for row in rows:
+        for ordinal, row in enumerate(rows):
             keys = set(row.keys())
+            raw_payload = {
+                key: json_safe(row[key])
+                for key in row.keys()
+                if not key.startswith("_")
+            }
+            if ATTACHMENT_RELATION_PAYLOAD_KEY in raw_payload:
+                raise ValueError(
+                    "Apple attachment source row collides with reserved A1 relation provenance key"
+                )
+            raw_payload[ATTACHMENT_RELATION_PAYLOAD_KEY] = {
+                "source_relation_ordinal": ordinal,
+                "raw_join_rowid": int(row["_relation_rowid"]),
+                "raw_message_id": int(row["_relation_message_id"]),
+                "raw_attachment_id": int(row["_relation_attachment_id"]),
+                "resolution_status": "resolved",
+            }
             records.append(
                 AttachmentRecord(
                     source_attachment_id=str(row["_attachment_rowid"]),
@@ -366,11 +386,7 @@ class IMessageParser:
                     transfer_name=row["transfer_name"] if "transfer_name" in keys else None,
                     total_bytes=row["total_bytes"] if "total_bytes" in keys else None,
                     source_path=row["filename"] if "filename" in keys else None,
-                    raw_payload={
-                        key: json_safe(row[key])
-                        for key in row.keys()
-                        if not key.startswith("_")
-                    },
+                    raw_payload=raw_payload,
                 )
             )
         return records
