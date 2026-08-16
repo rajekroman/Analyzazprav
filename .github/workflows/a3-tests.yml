@@ -1,23 +1,43 @@
 name: A3 tests
 
 on:
-  push:
-    branches:
-      - agent/a3-processing-classification
   pull_request:
     paths:
       - 'database/a3_schema.sql'
       - 'src/analyzazprav/processing/**'
-      - 'tests/test_a3*.py'
+      - 'tests/**'
+      - 'docs/A3_SCOPE.md'
+      - 'docs/A3_A7_HANDOFF.md'
+      - 'pyproject.toml'
+      - '.github/workflows/a3-tests.yml'
+  push:
+    branches:
+      - main
+      - agent/a3-processing-classification
+      - agent/a0-a3-integration
+    paths:
+      - 'database/a3_schema.sql'
+      - 'src/analyzazprav/processing/**'
+      - 'tests/**'
+      - 'docs/A3_SCOPE.md'
+      - 'docs/A3_A7_HANDOFF.md'
+      - 'pyproject.toml'
       - '.github/workflows/a3-tests.yml'
 
 jobs:
-  unittest:
+  vertical-regression:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run A3 unit and real A2 contract tests
-        run: python -m unittest discover -s tests -p 'test_a3*.py' -v
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e . pytest
+      - name: Verify unified CLI entry points
+        run: |
+          az-import --help
+          az-normalize --help
+          az-process --help
+      - name: Run A1+A2+A3 regression suite
+        run: python -m pytest -q
