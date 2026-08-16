@@ -5,7 +5,7 @@ import json
 
 from .config import AnalyticsConfig
 
-ANALYTICS_VERSION = "8"
+ANALYTICS_VERSION = "9"
 
 
 def analysis_signature(config: AnalyticsConfig) -> str:
@@ -13,7 +13,7 @@ def analysis_signature(config: AnalyticsConfig) -> str:
 
     payload = {
         "analytics_version": ANALYTICS_VERSION,
-        "input_contract": "a2-membership+a3-processing-run-v1",
+        "input_contract": "a2-membership+a3-processing-run+resolved-sender-v2",
         "topic_method": "lexical_ngram_v1",
         "topic_marker_method": "topic_marker_cooccurrence_v1",
         "config": config.as_dict(),
