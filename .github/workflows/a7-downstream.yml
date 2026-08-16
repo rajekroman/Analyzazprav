@@ -133,6 +133,8 @@ jobs:
           path: a7-reports
           merge-multiple: true
       - name: Aggregate release verdict
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: >-
           python tools/a7_downstream/release_verdict.py
           --reports a7-reports
