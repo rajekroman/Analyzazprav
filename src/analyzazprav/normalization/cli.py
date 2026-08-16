@@ -58,6 +58,7 @@ def _cmd_ingest_a1(database: Path, staging: Path) -> int:
                 "messages": result.messages,
                 "attachments": result.attachments,
                 "relations": result.relations,
+                "conversation_relations": result.conversation_relations,
                 "integrity": report,
             }
         )

@@ -105,14 +105,15 @@ class A2StagingTests(unittest.TestCase):
                 (2, "002_a1_staging_contract.sql"),
                 (3, "003_source_content_hash.sql"),
                 (4, "004_explicit_local_time.sql"),
+                (5, "005_lossless_membership.sql"),
             ],
         )
         version = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()["value"]
-        self.assertEqual(version, "4")
+        self.assertEqual(version, "5")
 
-    def test_v1_database_upgrades_to_current_without_data_loss(self):
+    def test_v1_database_upgrades_to_v5_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite"
         conn = sqlite3.connect(legacy_path)
         conn.executescript((ROOT / "database" / "migrations" / "001_initial.sql").read_text(encoding="utf-8"))
@@ -150,17 +151,16 @@ class A2StagingTests(unittest.TestCase):
             message_source_columns = {
                 row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message_source)")
             }
-            message_columns = {
-                row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message)")
-            }
             import_columns = {
                 row["name"] for row in upgraded.conn.execute("PRAGMA table_info(import_run)")
+            }
+            conversation_source_columns = {
+                row["name"] for row in upgraded.conn.execute("PRAGMA table_info(conversation_source)")
             }
             self.assertIn("source_record_key", message_source_columns)
             self.assertIn("source_contract_version", message_source_columns)
             self.assertIn("source_sha256", import_columns)
-            self.assertIn("sent_at_local_iso", message_columns)
-            self.assertIn("timezone_name", message_columns)
+            self.assertIn("source_snapshot_key", conversation_source_columns)
             self.assertIsNone(
                 upgraded.conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='duplicate_candidate'"
@@ -172,15 +172,18 @@ class A2StagingTests(unittest.TestCase):
             self.assertEqual(
                 upgraded.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 1
             )
+            self.assertEqual(
+                upgraded.conn.execute("SELECT COUNT(*) FROM message_conversation").fetchone()[0], 1
+            )
             rows = upgraded.conn.execute(
                 "SELECT version FROM schema_migration ORDER BY version"
             ).fetchall()
-            self.assertEqual([row["version"] for row in rows], [1, 2, 3, 4])
+            self.assertEqual([row["version"] for row in rows], [1, 2, 3, 4, 5])
             self.assertEqual(
                 upgraded.conn.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()["value"],
-                "4",
+                "5",
             )
             report = upgraded.integrity_report()
             self.assertEqual(report["integrity"], "ok")
@@ -191,28 +194,32 @@ class A2StagingTests(unittest.TestCase):
     def test_a1_bundle_ingest_preserves_provenance_and_relations(self):
         result = ingest_a1_staging_bundle(self.db, self._write_bundle())
         self.assertEqual((result.messages, result.attachments, result.relations), (2, 1, 1))
+        self.assertEqual(result.conversation_relations, 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM participant").fetchone()[0], 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_relation").fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_conversation").fetchone()[0], 2)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source_conversation").fetchone()[0], 2)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_attachment_occurrence").fetchone()[0], 1)
         self.assertEqual(
             self.db.conn.execute("SELECT availability FROM attachment").fetchone()["availability"],
             "missing",
         )
         msg = self.db.conn.execute(
-            """SELECT timestamp_precision, timestamp_quality,
-                      sent_at_local_iso, timezone_name, timezone_offset_min
-               FROM message WHERE canonical_guid='GUID-A'"""
+            "SELECT timestamp_precision, timestamp_quality FROM message WHERE canonical_guid='GUID-A'"
         ).fetchone()
         self.assertEqual((msg["timestamp_precision"], msg["timestamp_quality"]), ("microsecond", "converted"))
-        self.assertIsNone(msg["sent_at_local_iso"])
-        self.assertIsNone(msg["timezone_name"])
-        self.assertIsNone(msg["timezone_offset_min"])
         source = self.db.conn.execute(
             "SELECT source_record_key, source_contract_version, metadata_json FROM message_source WHERE source_message_id='101'"
         ).fetchone()
         self.assertEqual(source["source_record_key"], "1" * 64)
         self.assertEqual(source["source_contract_version"], "1")
         self.assertEqual(json.loads(source["metadata_json"])["a1_source_timestamp_precision"], "nanosecond")
+        source_conversation = self.db.conn.execute(
+            "SELECT source_snapshot_key, source_sha256 FROM conversation_source"
+        ).fetchone()
+        self.assertEqual(source_conversation["source_snapshot_key"], "a" * 64)
+        self.assertEqual(source_conversation["source_sha256"], "a" * 64)
         import_run = self.db.conn.execute(
             "SELECT source_fingerprint, source_sha256, parser_version FROM import_run WHERE id=?",
             (result.import_run_id,),
@@ -223,6 +230,7 @@ class A2StagingTests(unittest.TestCase):
         repeated = ingest_a1_staging_bundle(self.db, Path(self.tmp.name) / "staging")
         self.assertTrue(repeated.already_imported)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 2)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source_conversation").fetchone()[0], 2)
 
     def test_new_parser_version_reuses_canonical_messages_but_adds_provenance(self):
         staging = self._write_bundle(parser_version="0.2.0")
@@ -232,6 +240,8 @@ class A2StagingTests(unittest.TestCase):
         self.assertNotEqual(first.import_run_id, second.import_run_id)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 4)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM conversation_source").fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source_conversation").fetchone()[0], 4)
         imports = self.db.conn.execute(
             """SELECT source_sha256, source_fingerprint, parser_version
                FROM import_run ORDER BY id"""

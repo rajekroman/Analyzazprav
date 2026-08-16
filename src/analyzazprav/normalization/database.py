@@ -224,6 +224,26 @@ class CanonicalDatabase:
                 ),
             )
 
+    def _source_snapshot_for_import(
+        self,
+        import_run_id: int,
+        source_sha256: str | None = None,
+    ) -> tuple[str, str | None]:
+        row = self.conn.execute(
+            "SELECT source_sha256, source_fingerprint FROM import_run WHERE id=?",
+            (import_run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown import_run_id: {import_run_id}")
+        raw_sha256 = source_sha256 or row["source_sha256"]
+        if raw_sha256:
+            value = str(raw_sha256)
+            return value, value
+        fingerprint = str(row["source_fingerprint"] or "").strip()
+        if not fingerprint:
+            raise ValueError("Import run has no usable source snapshot identity")
+        return f"fingerprint:{fingerprint}", None
+
     def get_or_create_participant(
         self,
         *,
@@ -268,6 +288,7 @@ class CanonicalDatabase:
         source_type: str,
         source_conversation_id: str,
         import_run_id: int | None = None,
+        source_sha256: str | None = None,
         canonical_key: str | None = None,
         title: str | None = None,
         conversation_type: str = "unknown",
@@ -275,10 +296,15 @@ class CanonicalDatabase:
         participant_ids: Sequence[int] = (),
         metadata: Mapping[str, Any] | None = None,
     ) -> int:
+        if import_run_id is None:
+            raise ValueError("import_run_id is required for source-scoped conversation identity")
+        snapshot_key, raw_sha256 = self._source_snapshot_for_import(
+            import_run_id, source_sha256
+        )
         row = self.conn.execute(
             """SELECT conversation_id FROM conversation_source
-               WHERE source_type=? AND source_conversation_id=?""",
-            (source_type, source_conversation_id),
+               WHERE source_type=? AND source_snapshot_key=? AND source_conversation_id=?""",
+            (source_type, snapshot_key, source_conversation_id),
         ).fetchone()
         conversation_id = int(row["conversation_id"]) if row is not None else 0
 
@@ -300,9 +326,18 @@ class CanonicalDatabase:
                 conversation_id = int(cur.lastrowid)
             self.conn.execute(
                 """INSERT OR IGNORE INTO conversation_source(
-                       conversation_id, import_run_id, source_type, source_conversation_id
-                   ) VALUES (?, ?, ?, ?)""",
-                (conversation_id, import_run_id, source_type, source_conversation_id),
+                       conversation_id, import_run_id, source_type, source_snapshot_key,
+                       source_sha256, source_conversation_id, metadata_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conversation_id,
+                    import_run_id,
+                    source_type,
+                    snapshot_key,
+                    raw_sha256,
+                    source_conversation_id,
+                    self._json(metadata),
+                ),
             )
             self.conn.executemany(
                 """INSERT OR IGNORE INTO conversation_participant(conversation_id, participant_id)
@@ -341,14 +376,68 @@ class CanonicalDatabase:
             ).fetchone()
         return None if row is None else int(row["id"])
 
+    def _ensure_message_membership(
+        self,
+        *,
+        message_id: int,
+        message_source_id: int,
+        record: MessageInput,
+    ) -> None:
+        existing = self.conn.execute(
+            """SELECT id FROM message_conversation
+               WHERE message_id=? AND conversation_id=?""",
+            (message_id, record.conversation_id),
+        ).fetchone()
+        if existing is None:
+            primary_exists = self.conn.execute(
+                "SELECT 1 FROM message_conversation WHERE message_id=? AND is_primary=1 LIMIT 1",
+                (message_id,),
+            ).fetchone()
+            with self.conn:
+                cur = self.conn.execute(
+                    """INSERT INTO message_conversation(
+                           message_id, conversation_id, is_primary, metadata_json
+                       ) VALUES (?, ?, ?, '{}')""",
+                    (message_id, record.conversation_id, int(primary_exists is None)),
+                )
+                membership_id = int(cur.lastrowid)
+        else:
+            membership_id = int(existing["id"])
+
+        if not record.source_conversation_id:
+            return
+        snapshot_key, _ = self._source_snapshot_for_import(record.import_run_id)
+        source_conversation = self.conn.execute(
+            """SELECT id FROM conversation_source
+               WHERE source_type=? AND source_snapshot_key=? AND source_conversation_id=?""",
+            (record.source_type, snapshot_key, record.source_conversation_id),
+        ).fetchone()
+        if source_conversation is None:
+            return
+        with self.conn:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO message_source_conversation(
+                       message_source_id, conversation_source_id, membership_id,
+                       position, metadata_json
+                   ) VALUES (?, ?, ?, 0, '{}')""",
+                (message_source_id, int(source_conversation["id"]), membership_id),
+            )
+
     def insert_message(self, record: MessageInput) -> int:
         source_hash = self.source_hash(record)
         source_row = self.conn.execute(
-            "SELECT message_id FROM message_source WHERE import_run_id=? AND source_hash=?",
+            """SELECT id, message_id FROM message_source
+               WHERE import_run_id=? AND source_hash=?""",
             (record.import_run_id, source_hash),
         ).fetchone()
         if source_row is not None:
-            return int(source_row["message_id"])
+            message_id = int(source_row["message_id"])
+            self._ensure_message_membership(
+                message_id=message_id,
+                message_source_id=int(source_row["id"]),
+                record=record,
+            )
+            return message_id
 
         message_id: int | None = None
         if record.source_record_key:
@@ -390,7 +479,7 @@ class CanonicalDatabase:
                 )
                 message_id = int(cur.lastrowid)
 
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT INTO message_source(
                        message_id, import_run_id, source_type, source_message_id,
                        source_conversation_id, source_row_id, source_record_key,
@@ -413,6 +502,13 @@ class CanonicalDatabase:
                     self._json(record.metadata),
                 ),
             )
+            message_source_id = int(cur.lastrowid)
+
+        self._ensure_message_membership(
+            message_id=message_id,
+            message_source_id=message_source_id,
+            record=record,
+        )
         return message_id
 
     def add_attachment(
@@ -454,11 +550,31 @@ class CanonicalDatabase:
                    VALUES (?, ?, ?)""",
                 (message_id, attachment_id, position),
             )
+
+            occurrence_id: int | None = None
+            if position is not None:
+                occurrence = self.conn.execute(
+                    """SELECT id, attachment_id FROM message_attachment_occurrence
+                       WHERE message_id=? AND position=?""",
+                    (message_id, position),
+                ).fetchone()
+                if occurrence is None:
+                    cur = self.conn.execute(
+                        """INSERT INTO message_attachment_occurrence(
+                               message_id, attachment_id, position, metadata_json
+                           ) VALUES (?, ?, ?, '{}')""",
+                        (message_id, attachment_id, position),
+                    )
+                    occurrence_id = int(cur.lastrowid)
+                else:
+                    occurrence_id = int(occurrence["id"])
+
             self.conn.execute(
                 """INSERT INTO attachment_source(
                        attachment_id, import_run_id, source_attachment_id,
-                       original_filename, original_path, raw_payload_json
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                       original_filename, original_path, raw_payload_json,
+                       message_attachment_occurrence_id
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     attachment_id,
                     import_run_id,
@@ -466,6 +582,7 @@ class CanonicalDatabase:
                     original_filename,
                     original_path,
                     self._json(raw_payload),
+                    occurrence_id,
                 ),
             )
         return attachment_id
@@ -488,8 +605,23 @@ class CanonicalDatabase:
     def integrity_report(self) -> dict[str, Any]:
         integrity = self.conn.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = [dict(row) for row in self.conn.execute("PRAGMA foreign_key_check")]
+        table_names = {
+            row["name"]
+            for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        wanted = (
+            "conversation",
+            "participant",
+            "message",
+            "message_source",
+            "message_conversation",
+            "message_source_conversation",
+            "attachment",
+            "message_attachment_occurrence",
+        )
         counts = {
             table: self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("conversation", "participant", "message", "message_source", "attachment")
+            for table in wanted
+            if table in table_names
         }
         return {"integrity": integrity, "foreign_key_errors": foreign_keys, "counts": counts}
