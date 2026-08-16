@@ -7,12 +7,18 @@ on:
       - agent/a7-qa-validation
     paths:
       - "qa/**"
+      - "src/analyzazprav/normalization/**"
+      - "database/**"
       - "docs/qa-validation.md"
+      - "pyproject.toml"
       - ".github/workflows/a7-qa.yml"
   pull_request:
     paths:
       - "qa/**"
+      - "src/analyzazprav/normalization/**"
+      - "database/**"
       - "docs/qa-validation.md"
+      - "pyproject.toml"
       - ".github/workflows/a7-qa.yml"
 
 jobs:
@@ -23,7 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run A7 regression tests
+      - name: Install canonical package
+        run: python -m pip install -e .
+      - name: Run A7 regression and integration tests
         run: python -m unittest discover -s qa/tests -v
       - name: Validate golden fixture
         run: python -m qa.staging_validator qa/fixtures/golden --report a7-golden-report.json
