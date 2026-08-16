@@ -86,3 +86,29 @@ def test_analysis_packet_can_add_context():
     assert packet["selected_message_count"] == 1
     assert packet["message_count"] == 6
     assert sum(1 for item in packet["messages"] if item["selected"]) == 1
+
+
+def test_loads_a2_analysis_views_with_microsecond_timestamps(tmp_path):
+    db_path = tmp_path / "a2.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE analysis_messages (id INTEGER, conversation_id INTEGER, sender_name TEXT, sent_at_utc_us INTEGER, text TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE analysis_conversations (id INTEGER, title TEXT, canonical_key TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO analysis_conversations VALUES (1, 'Test kontakt', 'fallback-key')"
+        )
+        ts = int(pd.Timestamp("2026-08-16T05:00:00Z").timestamp() * 1_000_000)
+        conn.execute(
+            "INSERT INTO analysis_messages VALUES (?, ?, ?, ?, ?)",
+            (101, 1, 'Osoba A', ts, 'Test'),
+        )
+        conn.commit()
+
+    frame, source = load_sqlite_messages(db_path)
+    assert source.object_name == "analysis_messages"
+    assert frame.loc[0, "message_id"] == "101"
+    assert frame.loc[0, "contact"] == "Test kontakt"
+    assert frame.loc[0, "timestamp"] == pd.Timestamp("2026-08-16T05:00:00Z")
