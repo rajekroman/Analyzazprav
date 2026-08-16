@@ -2,6 +2,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import analiza_zprav_a1.importer as importer_module
 from analiza_zprav_a1.importer import import_imessage
 from analiza_zprav_a1.reconciliation import reconcile_bundle
 from analyzazprav.normalization import CanonicalDatabase, ingest_a1_staging_bundle
@@ -134,3 +137,58 @@ def test_reconciliation_detects_tampered_staging(tmp_path: Path) -> None:
     assert report["ok"] is False
     assert "messages_emitted_matches_file" in report["failed_checks"]
     assert "source_message_rows_accounted" in report["failed_checks"]
+
+
+def test_reconciliation_failure_marks_bundle_invalid_for_a2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "chat.db"
+    staging = tmp_path / "staging"
+    canonical = tmp_path / "canonical.sqlite"
+    _make_source(source)
+
+    def forced_failure(*args, **kwargs):
+        return {
+            "ok": False,
+            "status": "failed",
+            "failed_checks": ["forced_reconciliation_failure"],
+            "unsupported_records": [],
+            "duplicate_records": [],
+        }
+
+    monkeypatch.setattr(importer_module, "reconcile_bundle", forced_failure)
+    stats = importer_module.import_imessage(source, staging)
+
+    assert stats.errors == 1
+    assert stats.reconciliation_ok is False
+
+    manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["counts"]["message_errors"] == 0
+    assert manifest["counts"]["reconciliation_errors"] == 1
+    assert manifest["counts"]["errors"] == 1
+
+    error_rows = [
+        json.loads(line)
+        for line in (staging / "errors.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert error_rows == [
+        {
+            "error": "A1 source reconciliation failed",
+            "error_type": "ReconciliationError",
+            "failed_checks": ["forced_reconciliation_failure"],
+            "scope": "reconciliation",
+        }
+    ]
+
+    db = CanonicalDatabase(canonical)
+    try:
+        db.initialize()
+        with pytest.raises(
+            ValueError,
+            match="A1 staging manifest reports extraction errors",
+        ):
+            ingest_a1_staging_bundle(db, staging)
+    finally:
+        db.close()
