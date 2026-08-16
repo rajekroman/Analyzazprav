@@ -7,7 +7,7 @@ import sqlite3
 
 from .adapter import analyze_database, analyze_incremental_database
 from .config import AnalyticsConfig
-from .store_v6 import AnalyticsStore
+from .store_v7 import AnalyticsStore
 
 
 def build_parser() -> argparse.ArgumentParser:
