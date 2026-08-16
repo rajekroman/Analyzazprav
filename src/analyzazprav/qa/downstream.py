@@ -6,7 +6,9 @@ from math import floor, isclose
 from statistics import mean, median
 from typing import Any, Iterable, Mapping, Sequence
 
-from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING
+STATUS_PASS = "PASS"
+STATUS_WARNING = "WARNING"
+STATUS_FAIL = "FAIL"
 
 VERDICT_VALID = "VALID"
 VERDICT_INVALID = "INVALID"
