@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from ..apple_time import apple_timestamp_precision, apple_timestamp_to_iso
 from ..jsonsafe import json_safe
@@ -40,8 +40,12 @@ class IMessageParser:
 
         with self._connect() as conn:
             tables = self._tables(conn)
-            participant_cache: dict[int, list[str]] = {}
-            conversation_cache: dict[int, dict[str, object]] = {}
+            participant_cache: dict[
+                int, tuple[list[str], list[dict[str, Any]]]
+            ] = {}
+            conversation_cache: dict[
+                int, tuple[dict[str, object], str]
+            ] = {}
             mcols = self._columns(conn, "message")
             if not mcols:
                 raise ValueError("The source DB does not contain an Apple Messages 'message' table")
@@ -140,8 +144,8 @@ class IMessageParser:
         conn: sqlite3.Connection,
         message_id: int,
         tables: set[str],
-        participant_cache: dict[int, list[str]],
-        conversation_cache: dict[int, dict[str, object]],
+        participant_cache: dict[int, tuple[list[str], list[dict[str, Any]]]],
+        conversation_cache: dict[int, tuple[dict[str, object], str]],
         message_service: str | None,
     ) -> list[ConversationSourceRecord]:
         if "chat_message_join" not in tables:
@@ -169,14 +173,23 @@ class IMessageParser:
             if chat_id not in conversation_cache:
                 conversation_cache[chat_id] = self._conversation_metadata(conn, chat_id, tables)
 
-            participants = participant_cache[chat_id]
-            chat_metadata = dict(conversation_cache[chat_id])
-            raw_guid = chat_metadata.get("guid")
+            participants, participant_relations = participant_cache[chat_id]
+            source_chat_metadata, chat_resolution = conversation_cache[chat_id]
+            chat_metadata = dict(source_chat_metadata)
+            chat_metadata["_a1_source_relation"] = {
+                "chat": {
+                    "raw_chat_rowid": chat_id,
+                    "resolution_status": chat_resolution,
+                },
+                "participant_relations": [dict(item) for item in participant_relations],
+            }
+
+            raw_guid = source_chat_metadata.get("guid")
             chat_guid = str(raw_guid).strip() if raw_guid not in (None, "") else None
             source_conversation_key = (
                 f"guid:{chat_guid}" if chat_guid else f"rowid:{chat_id}"
             )
-            raw_service = chat_metadata.get("service_name") or chat_metadata.get("service")
+            raw_service = source_chat_metadata.get("service_name") or source_chat_metadata.get("service")
             relation_service = (
                 str(raw_service)
                 if raw_service not in (None, "")
@@ -197,34 +210,90 @@ class IMessageParser:
     @staticmethod
     def _participants_for_chat(
         conn: sqlite3.Connection, chat_id: int, tables: set[str]
-    ) -> list[str]:
-        if "chat_handle_join" not in tables or "handle" not in tables:
-            return []
-        rows = conn.execute(
-            """
-            SELECT h.id
-            FROM chat_handle_join chj
-            JOIN handle h ON h.ROWID=chj.handle_id
-            WHERE chj.chat_id=?
-            ORDER BY h.ROWID
-            """,
-            (chat_id,),
-        )
-        return [str(row[0]) for row in rows if row[0] is not None]
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if "chat_handle_join" not in tables:
+            return [], []
+
+        if "handle" in tables:
+            rows = conn.execute(
+                """
+                SELECT chj.handle_id AS raw_handle_id,
+                       h.ROWID AS resolved_handle_rowid,
+                       h.id AS handle_value
+                FROM chat_handle_join chj
+                LEFT JOIN handle h ON h.ROWID=chj.handle_id
+                WHERE chj.chat_id=?
+                ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
+                         chj.handle_id,
+                         h.ROWID
+                """,
+                (chat_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT chj.handle_id AS raw_handle_id,
+                       NULL AS resolved_handle_rowid,
+                       NULL AS handle_value
+                FROM chat_handle_join chj
+                WHERE chj.chat_id=?
+                ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
+                         chj.handle_id
+                """,
+                (chat_id,),
+            ).fetchall()
+
+        handles: list[str] = []
+        relations: list[dict[str, Any]] = []
+        for ordinal, row in enumerate(rows):
+            raw_handle_id = row["raw_handle_id"]
+            resolved_rowid = row["resolved_handle_rowid"]
+            handle_value = row["handle_value"]
+            if raw_handle_id is None:
+                status = "missing_handle_id"
+            elif "handle" not in tables:
+                status = "handle_table_missing"
+            elif resolved_rowid is None:
+                status = "missing_handle_row"
+            elif handle_value is None:
+                status = "handle_value_null"
+            else:
+                status = "resolved"
+                handles.append(str(handle_value))
+
+            relation: dict[str, Any] = {
+                "source_relation_ordinal": ordinal,
+                "raw_chat_rowid": chat_id,
+                "raw_handle_id": raw_handle_id,
+                "resolution_status": status,
+            }
+            if resolved_rowid is not None:
+                relation["resolved_handle_rowid"] = int(resolved_rowid)
+            if handle_value is not None:
+                relation["handle"] = str(handle_value)
+            relations.append(relation)
+        return handles, relations
 
     @staticmethod
     def _conversation_metadata(
         conn: sqlite3.Connection, chat_id: int, tables: set[str]
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], str]:
         if "chat" not in tables:
-            return {}
+            return {}, "chat_table_missing"
         row = conn.execute(
             "SELECT c.*, c.ROWID AS _chat_rowid FROM chat c WHERE c.ROWID=?",
             (chat_id,),
         ).fetchone()
         if row is None:
-            return {}
-        return {key: json_safe(row[key]) for key in row.keys() if not key.startswith("_")}
+            return {}, "missing_chat_row"
+        return (
+            {
+                key: json_safe(row[key])
+                for key in row.keys()
+                if not key.startswith("_")
+            },
+            "resolved",
+        )
 
     def _attachments_for(self, conn: sqlite3.Connection, message_id: int) -> list[AttachmentRecord]:
         tables = self._tables(conn)

@@ -15,13 +15,13 @@ from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
-from .reconciliation import reconcile_bundle, write_reconciliation
+from .relation_reconciliation import reconcile_bundle, write_reconciliation
 from .sqlite_schema import inventory_sqlite_schema, write_schema_inventory
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.7.0"
+IMESSAGE_PARSER_VERSION = "0.8.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
