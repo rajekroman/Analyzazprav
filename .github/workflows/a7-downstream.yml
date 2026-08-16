@@ -29,40 +29,15 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e . pytest
-      - name: Run authoritative A1-A3 plus A7 regression suite
+      - name: Run integrated A1-A4 plus authoritative A7 oracle/regression suite
         run: python -m pytest -q
-      - name: Write core A7 report
-        run: printf '%s\n' '{"schema_version":1,"module":"core","status":"PASS","verdict":"VALID"}' > a7-core-report.json
+      - name: Write integrated core report
+        run: printf '%s\n' '{"schema_version":1,"module":"core","status":"PASS","verdict":"VALID","scope":"integrated A1-A4 plus authoritative A7 tests on current branch"}' > a7-core-report.json
       - name: Upload core report
         uses: actions/upload-artifact@v4
         with:
           name: a7-core-report
           path: a7-core-report.json
-
-  a4-live:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout A7
-        uses: actions/checkout@v4
-      - name: Checkout pinned A4
-        uses: actions/checkout@v4
-        with:
-          ref: 642c6413d304a802de69f43e65cad599dea78cd1
-          path: a4-under-test
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Run actual A4 through independent A7 oracle
-        env:
-          PYTHONPATH: ${{ github.workspace }}/a4-under-test/src:${{ github.workspace }}
-        run: python tools/a7_downstream/a4_live.py --report a7-a4-report.json
-      - name: Upload A4 report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: a7-a4-report
-          path: a7-a4-report.json
-          if-no-files-found: ignore
 
   a5-live:
     runs-on: ubuntu-latest
@@ -118,7 +93,7 @@ jobs:
 
   release-verdict:
     if: always()
-    needs: [core-a7, a4-live, a5-live, a6-live]
+    needs: [core-a7, a5-live, a6-live]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -140,7 +115,6 @@ jobs:
           --reports a7-reports
           --report a7-release-verdict.json
           --core-result '${{ needs.core-a7.result }}'
-          --a4-result '${{ needs.a4-live.result }}'
           --a5-result '${{ needs.a5-live.result }}'
           --a6-result '${{ needs.a6-live.result }}'
       - name: Upload release verdict

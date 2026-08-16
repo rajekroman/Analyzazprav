@@ -7,110 +7,9 @@ from analyzazprav.qa.downstream import (
     VERDICT_NEEDS_REVIEW,
     VERDICT_VALID,
     aggregate_release_verdict,
-    validate_a4_result,
     validate_a5_result,
     validate_a6_contract,
 )
-
-
-def _a4_source():
-    return [
-        {"membership_id": 101, "message_id": 1, "conversation_id": 7, "participant_id": 10, "session_id": 1, "sequence_number": 1, "timestamp_us": 0, "word_count": 2},
-        {"membership_id": 102, "message_id": 2, "conversation_id": 7, "participant_id": 10, "session_id": 1, "sequence_number": 2, "timestamp_us": 60_000_000, "word_count": 1},
-        {"membership_id": 103, "message_id": 3, "conversation_id": 7, "participant_id": 20, "session_id": 1, "sequence_number": 3, "timestamp_us": 300_000_000, "word_count": 4},
-        {"membership_id": 104, "message_id": 4, "conversation_id": 7, "participant_id": 20, "session_id": 2, "sequence_number": 4, "timestamp_us": 14_400_000_000, "word_count": 2},
-    ]
-
-
-def _a4_result():
-    return {
-        "conversation_id": 7,
-        "source_message_count": 4,
-        "known_sender_message_count": 4,
-        "unknown_sender_message_count": 0,
-        "turn_count": 3,
-        "session_count": 2,
-        "turns": [
-            {"turn_id": 1, "conversation_id": 7, "session_id": 1, "participant_id": 10, "start_us": 0, "end_us": 60_000_000, "message_ids": [1, 2], "message_count": 2, "word_count": 3},
-            {"turn_id": 2, "conversation_id": 7, "session_id": 1, "participant_id": 20, "start_us": 300_000_000, "end_us": 300_000_000, "message_ids": [3], "message_count": 1, "word_count": 4},
-            {"turn_id": 3, "conversation_id": 7, "session_id": 2, "participant_id": 20, "start_us": 14_400_000_000, "end_us": 14_400_000_000, "message_ids": [4], "message_count": 1, "word_count": 2},
-        ],
-        "response_samples": [
-            {"conversation_id": 7, "session_id": 1, "from_participant_id": 10, "responder_id": 20, "previous_turn_id": 1, "response_turn_id": 2, "latency_seconds": 240.0, "response_effort_ratio": 4 / 3},
-        ],
-        "participant_metrics": {
-            10: {
-                "message_count": 2,
-                "word_count": 3,
-                "turn_count": 1,
-                "initiations": 1,
-                "initiation_share": 0.5,
-                "response_turn_count": 0,
-                "latency_sample_count": 0,
-                "unanswered_turn_count": 0,
-                "mean_response_latency_seconds": None,
-                "median_response_latency_seconds": None,
-                "p25_response_latency_seconds": None,
-                "p75_response_latency_seconds": None,
-                "p90_response_latency_seconds": None,
-                "median_response_effort_ratio": None,
-            },
-            20: {
-                "message_count": 2,
-                "word_count": 6,
-                "turn_count": 2,
-                "initiations": 1,
-                "initiation_share": 0.5,
-                "response_turn_count": 1,
-                "latency_sample_count": 1,
-                "unanswered_turn_count": 2,
-                "mean_response_latency_seconds": 240.0,
-                "median_response_latency_seconds": 240.0,
-                "p25_response_latency_seconds": 240.0,
-                "p75_response_latency_seconds": 240.0,
-                "p90_response_latency_seconds": 240.0,
-                "median_response_effort_ratio": 4 / 3,
-            },
-        },
-        "reciprocity": {
-            "message_reciprocity": 1.0,
-            "word_reciprocity": 0.5,
-            "turn_reciprocity": 0.5,
-            "initiation_reciprocity": 1.0,
-        },
-        "conflicts": [{"source_message_ids": [1, 3]}],
-        "silence_events": [],
-        "time_buckets": [],
-        "daily_metrics": [],
-        "change_points": [],
-        "period_metrics": [],
-        "engagement_signals": [],
-        "dyadic_regimes": [],
-        "trend_summaries": [],
-        "topic_candidates": [{"topic_key": "projekt", "source_message_ids": [1, 3]}],
-        "topic_evidence": [{"topic_key": "projekt", "message_id": 1}],
-    }
-
-
-def test_a4_independent_oracle_accepts_exact_result():
-    report = validate_a4_result(_a4_source(), _a4_result())
-    assert report["verdict"] == VERDICT_VALID, report
-
-
-def test_a4_independent_oracle_rejects_wrong_latency():
-    result = deepcopy(_a4_result())
-    result["response_samples"][0]["latency_seconds"] = 239.0
-    report = validate_a4_result(_a4_source(), result)
-    assert report["verdict"] == VERDICT_INVALID
-    assert any(issue["code"] == "A4_RESPONSE_VALUE_MISMATCH" for issue in report["issues"])
-
-
-def test_a4_independent_oracle_rejects_evidence_outside_source():
-    result = deepcopy(_a4_result())
-    result["conflicts"][0]["source_message_ids"] = [1, 999]
-    report = validate_a4_result(_a4_source(), result)
-    assert report["verdict"] == VERDICT_INVALID
-    assert any(issue["code"] == "A4_EVIDENCE_OUTSIDE_SOURCE" for issue in report["issues"])
 
 
 def _a5_context():
@@ -175,6 +74,14 @@ def test_a5_assertion_without_evidence_is_invalid():
     report = validate_a5_result(_a5_context(), result)
     assert report["verdict"] == VERDICT_INVALID
     assert any(issue["code"] == "A5_ASSERTION_EVIDENCE_MISSING" for issue in report["issues"])
+
+
+def test_a5_evidence_ref_rejects_extra_snapshot():
+    result = deepcopy(_a5_result())
+    result["summary_evidence"]["messages"].append(_evidence(("m2",), metric=False)["messages"][0])
+    report = validate_a5_result(_a5_context(), result)
+    assert report["verdict"] == VERDICT_INVALID
+    assert any(issue["code"] == "A5_EVIDENCE_SNAPSHOT_EXTRA" for issue in report["issues"])
 
 
 RENDERER_SOURCE = '''
@@ -257,17 +164,17 @@ def test_a6_contract_rejects_attachment_provenance_rewrite():
 
 def test_release_aggregate_requires_every_component_valid():
     valid = {"verdict": VERDICT_VALID}
-    report = aggregate_release_verdict({"core": valid, "A4": valid, "A5": valid, "A6": valid})
+    report = aggregate_release_verdict({"core": valid, "A5": valid, "A6": valid})
     assert report["overall_verdict"] == VERDICT_VALID
     assert report["release_ready"] is True
 
-    missing = aggregate_release_verdict({"core": valid, "A4": None})
+    missing = aggregate_release_verdict({"core": valid, "A5": None, "A6": valid})
     assert missing["overall_verdict"] == VERDICT_NEEDS_REVIEW
     assert missing["release_ready"] is False
 
     invalid = aggregate_release_verdict(
-        {"core": valid, "A4": valid},
-        job_results={"A4": "failure"},
+        {"core": valid, "A5": valid, "A6": valid},
+        job_results={"A6": "failure"},
     )
     assert invalid["overall_verdict"] == VERDICT_INVALID
     assert invalid["release_ready"] is False
