@@ -199,55 +199,6 @@ CREATE TABLE IF NOT EXISTS analytics_event (
     source_message_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
--- Session ids are scoped to an A3 processing run. A4 keeps that run normalized
--- in analytics_run and validates every stored session reference against it.
-CREATE TRIGGER IF NOT EXISTS a4_validate_response_session
-BEFORE INSERT ON analytics_response_latency
-BEGIN
-    SELECT CASE WHEN NOT EXISTS (
-        SELECT 1
-        FROM analytics_run ar
-        JOIN conversation_session cs
-          ON cs.processing_run_id = ar.processing_run_id
-         AND cs.id = NEW.session_id
-         AND cs.conversation_id = NEW.conversation_id
-        WHERE ar.id = NEW.analytics_run_id
-    ) THEN RAISE(ABORT, 'A4 response session provenance mismatch') END;
-END;
-
-CREATE TRIGGER IF NOT EXISTS a4_validate_silence_sessions
-BEFORE INSERT ON analytics_silence_event
-BEGIN
-    SELECT CASE WHEN NOT EXISTS (
-        SELECT 1
-        FROM analytics_run ar
-        JOIN conversation_session previous
-          ON previous.processing_run_id = ar.processing_run_id
-         AND previous.id = NEW.previous_session_id
-         AND previous.conversation_id = NEW.conversation_id
-        JOIN conversation_session next
-          ON next.processing_run_id = ar.processing_run_id
-         AND next.id = NEW.next_session_id
-         AND next.conversation_id = NEW.conversation_id
-        WHERE ar.id = NEW.analytics_run_id
-    ) THEN RAISE(ABORT, 'A4 silence session provenance mismatch') END;
-END;
-
-CREATE TRIGGER IF NOT EXISTS a4_validate_event_session
-BEFORE INSERT ON analytics_event
-WHEN NEW.session_id IS NOT NULL
-BEGIN
-    SELECT CASE WHEN NOT EXISTS (
-        SELECT 1
-        FROM analytics_run ar
-        JOIN conversation_session cs
-          ON cs.processing_run_id = ar.processing_run_id
-         AND cs.id = NEW.session_id
-         AND cs.conversation_id = NEW.conversation_id
-        WHERE ar.id = NEW.analytics_run_id
-    ) THEN RAISE(ABORT, 'A4 event session provenance mismatch') END;
-END;
-
 CREATE INDEX IF NOT EXISTS idx_a4_participant_conversation
     ON analytics_participant_summary(conversation_id, participant_id, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_latency_conversation
