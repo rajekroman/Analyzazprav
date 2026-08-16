@@ -3,7 +3,7 @@ name: A4 tests
 on:
   push:
     branches:
-      - agent/a0-a4-integration
+      - agent/a0-a4-integration-v3
   pull_request:
     paths:
       - 'database/a4_schema*.sql'
