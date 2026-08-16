@@ -106,14 +106,20 @@ class A2StagingTests(unittest.TestCase):
                 (3, "003_source_content_hash.sql"),
                 (4, "004_explicit_local_time.sql"),
                 (5, "005_lossless_membership.sql"),
+                (6, "006_attachment_source_view.sql"),
             ],
         )
         version = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()["value"]
-        self.assertEqual(version, "5")
+        self.assertEqual(version, "6")
+        self.assertIsNotNone(
+            self.db.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='view' AND name='analysis_attachment_sources'"
+            ).fetchone()
+        )
 
-    def test_v1_database_upgrades_to_v5_without_data_loss(self):
+    def test_v1_database_upgrades_to_v6_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite"
         conn = sqlite3.connect(legacy_path)
         conn.executescript((ROOT / "database" / "migrations" / "001_initial.sql").read_text(encoding="utf-8"))
@@ -175,15 +181,20 @@ class A2StagingTests(unittest.TestCase):
             self.assertEqual(
                 upgraded.conn.execute("SELECT COUNT(*) FROM message_conversation").fetchone()[0], 1
             )
+            self.assertIsNotNone(
+                upgraded.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='view' AND name='analysis_attachment_sources'"
+                ).fetchone()
+            )
             rows = upgraded.conn.execute(
                 "SELECT version FROM schema_migration ORDER BY version"
             ).fetchall()
-            self.assertEqual([row["version"] for row in rows], [1, 2, 3, 4, 5])
+            self.assertEqual([row["version"] for row in rows], [1, 2, 3, 4, 5, 6])
             self.assertEqual(
                 upgraded.conn.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()["value"],
-                "5",
+                "6",
             )
             report = upgraded.integrity_report()
             self.assertEqual(report["integrity"], "ok")
@@ -227,10 +238,28 @@ class A2StagingTests(unittest.TestCase):
         self.assertEqual(import_run["source_sha256"], "a" * 64)
         self.assertNotEqual(import_run["source_fingerprint"], import_run["source_sha256"])
         self.assertEqual(import_run["parser_version"], "0.2.0")
+        attachment_source = self.db.conn.execute(
+            """SELECT attachment_source_id, attachment_id, occurrence_id, message_id,
+                      position, import_run_id, source_type, source_snapshot_key,
+                      source_sha256, parser_version, source_attachment_id,
+                      source_occurrence_key, original_filename, original_path
+               FROM analysis_attachment_sources"""
+        ).fetchone()
+        self.assertEqual(attachment_source["import_run_id"], result.import_run_id)
+        self.assertEqual(attachment_source["source_type"], "imessage_chat_db")
+        self.assertEqual(attachment_source["source_snapshot_key"], "a" * 64)
+        self.assertEqual(attachment_source["source_sha256"], "a" * 64)
+        self.assertEqual(attachment_source["parser_version"], "0.2.0")
+        self.assertEqual(attachment_source["source_attachment_id"], "501")
+        self.assertEqual(attachment_source["position"], 0)
+        self.assertEqual(attachment_source["original_filename"], "photo.heic")
+        self.assertEqual(attachment_source["original_path"], "/definitely/missing/photo.heic")
+        self.assertTrue(attachment_source["source_occurrence_key"].startswith("2" * 64))
         repeated = ingest_a1_staging_bundle(self.db, Path(self.tmp.name) / "staging")
         self.assertTrue(repeated.already_imported)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source_conversation").fetchone()[0], 2)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM analysis_attachment_sources").fetchone()[0], 1)
 
     def test_new_parser_version_reuses_canonical_messages_but_adds_provenance(self):
         staging = self._write_bundle(parser_version="0.2.0")
@@ -249,6 +278,29 @@ class A2StagingTests(unittest.TestCase):
         self.assertEqual([row["source_sha256"] for row in imports], ["a" * 64, "a" * 64])
         self.assertNotEqual(imports[0]["source_fingerprint"], imports[1]["source_fingerprint"])
         self.assertEqual([row["parser_version"] for row in imports], ["0.2.0", "0.3.0"])
+
+        provenance = self.db.conn.execute(
+            """SELECT attachment_source_id, attachment_id, occurrence_id, message_id,
+                      import_run_id, source_type, source_snapshot_key, source_sha256,
+                      parser_version, source_attachment_id, source_occurrence_key
+               FROM analysis_attachment_sources
+               ORDER BY import_run_id"""
+        ).fetchall()
+        self.assertEqual(len(provenance), 2)
+        self.assertEqual(len({row["attachment_source_id"] for row in provenance}), 2)
+        self.assertEqual(len({row["attachment_id"] for row in provenance}), 1)
+        self.assertEqual(len({row["occurrence_id"] for row in provenance}), 1)
+        self.assertEqual(len({row["message_id"] for row in provenance}), 1)
+        self.assertEqual({row["source_type"] for row in provenance}, {"imessage_chat_db"})
+        self.assertEqual({row["source_snapshot_key"] for row in provenance}, {"a" * 64})
+        self.assertEqual({row["source_sha256"] for row in provenance}, {"a" * 64})
+        self.assertEqual([row["parser_version"] for row in provenance], ["0.2.0", "0.3.0"])
+        self.assertEqual({row["source_attachment_id"] for row in provenance}, {"501"})
+        self.assertEqual(len({row["source_occurrence_key"] for row in provenance}), 1)
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM analysis_attachment_sources").fetchone()[0],
+            self.db.conn.execute("SELECT COUNT(*) FROM attachment_source").fetchone()[0],
+        )
 
     def test_manifest_with_extraction_errors_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "extraction errors"):

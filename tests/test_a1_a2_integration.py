@@ -71,6 +71,17 @@ def test_imessage_multichat_roundtrip_into_a2_v5(tmp_path: Path) -> None:
     staged = json.loads((staging / "messages.jsonl").read_text(encoding="utf-8"))
     source_record_key = staged["source_record_key"]
     assert len(staged["conversation_sources"]) == 2
+    staged_conversations = {
+        relation["source_conversation_key"]: relation
+        for relation in staged["conversation_sources"]
+    }
+    assert staged_conversations["guid:iMessage;-;+420111222333"]["participant_handles"] == [
+        "+420111222333"
+    ]
+    assert staged_conversations["guid:iMessage;+;group-abc"]["participant_handles"] == [
+        "+420111222333",
+        "+420999888777",
+    ]
 
     db = CanonicalDatabase(canonical_path)
     try:
@@ -94,7 +105,7 @@ def test_imessage_multichat_roundtrip_into_a2_v5(tmp_path: Path) -> None:
         assert stored_key == source_record_key
 
         source_conversations = db.conn.execute(
-            """SELECT source_conversation_id, source_snapshot_key
+            """SELECT source_conversation_id, source_snapshot_key, metadata_json
                FROM conversation_source ORDER BY source_conversation_id"""
         ).fetchall()
         assert [row[0] for row in source_conversations] == [
@@ -102,6 +113,33 @@ def test_imessage_multichat_roundtrip_into_a2_v5(tmp_path: Path) -> None:
             "guid:iMessage;-;+420111222333",
         ]
         assert {row[1] for row in source_conversations} == {a1.source_sha256}
+        group_source_metadata = json.loads(source_conversations[0][2])
+        assert group_source_metadata["participant_handles"] == [
+            "+420111222333",
+            "+420999888777",
+        ]
+
+        participant_rows = db.conn.execute(
+            """SELECT cs.source_conversation_id, pi.normalized_value
+               FROM conversation_source cs
+               JOIN conversation_participant cp ON cp.conversation_id=cs.conversation_id
+               JOIN participant_identity pi ON pi.participant_id=cp.participant_id
+               WHERE pi.identity_type='phone'
+               ORDER BY cs.source_conversation_id, pi.normalized_value"""
+        ).fetchall()
+        participants_by_source: dict[str, set[str]] = {}
+        for row in participant_rows:
+            participants_by_source.setdefault(str(row[0]), set()).add(str(row[1]))
+        assert participants_by_source["guid:iMessage;-;+420111222333"] == {
+            "+420111222333"
+        }
+        assert participants_by_source["guid:iMessage;+;group-abc"] == {
+            "+420111222333",
+            "+420999888777",
+        }
+        assert "+420999888777" not in participants_by_source[
+            "guid:iMessage;-;+420111222333"
+        ]
 
         analysis_rows = db.conn.execute(
             "SELECT membership_id, id, conversation_id FROM analysis_messages ORDER BY membership_id"
