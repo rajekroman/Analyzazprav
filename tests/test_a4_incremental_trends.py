@@ -161,6 +161,26 @@ class IncrementalTrendTests(unittest.TestCase):
         self.assertEqual(version, "6")
         self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
+    def test_new_a3_processing_run_invalidates_unchanged_a4_state(self) -> None:
+        conn = create_contract_db()
+        store = AnalyticsStore(conn)
+        store.initialize()
+        first = analyze_database(conn)
+        self.assertEqual(store.write_run(first, AnalyticsConfig()), 1)
+        self.assertEqual(analyze_incremental_database(conn), [])
+
+        # Same logical rows, but a new A3 run is a new provenance namespace for
+        # session references. A4 must not keep reports bound to the prior run.
+        conn.execute("INSERT INTO processing_run VALUES (2, 'completed')")
+        changed = analyze_incremental_database(conn)
+        self.assertEqual([item.conversation_id for item in changed], [10, 20])
+        run_id = store.write_run(changed, AnalyticsConfig())
+        self.assertEqual(run_id, 2)
+        self.assertEqual(
+            conn.execute("SELECT processing_run_id FROM analytics_run WHERE id=2").fetchone()[0],
+            2,
+        )
+
     def test_cli_full_then_incremental_noop(self) -> None:
         source = create_contract_db()
         with tempfile.TemporaryDirectory() as directory:
