@@ -66,7 +66,7 @@ def test_import_emits_schema_report_and_a2_accepts_extended_bundle(tmp_path: Pat
         (staging / "reconciliation.json").read_text(encoding="utf-8")
     )
 
-    assert manifest["parser"]["version"] == "0.7.0"
+    assert manifest["parser"]["version"] == "0.8.0"
     assert manifest["outputs"]["schema"] == "schema.json"
     assert manifest["source"]["schema_inventory_version"] == "1"
     assert manifest["source"]["schema_signature_sha256"] == schema["signature_sha256"]
