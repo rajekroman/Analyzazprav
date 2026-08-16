@@ -3,14 +3,16 @@
 from .adapter import analyze_database, load_analytic_messages
 from .config import AnalyticsConfig
 from .core import analyze_conversation, build_turns
-from .models import AnalyticMessage, ConversationAnalytics
+from .models import AnalyticMessage, ChangePoint, ConversationAnalytics, DailyParticipantMetric
 from .store import AnalyticsStore
 
 __all__ = [
     "AnalyticMessage",
     "AnalyticsConfig",
     "AnalyticsStore",
+    "ChangePoint",
     "ConversationAnalytics",
+    "DailyParticipantMetric",
     "analyze_conversation",
     "analyze_database",
     "build_turns",

@@ -9,6 +9,12 @@ from .core import analyze_conversation
 from .models import AnalyticMessage, ConversationAnalytics
 
 
+def _date_string(year: int | None, month: int | None, day: int | None) -> str | None:
+    if year is None or month is None or day is None:
+        return None
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
 _QUERY = """
 SELECT am.id,
        am.conversation_id,
@@ -21,7 +27,13 @@ SELECT am.id,
        pm.char_count,
        pm.question_mark_count,
        pm.exclamation_mark_count,
-       pm.has_attachment
+       pm.has_attachment,
+       pm.utc_year,
+       pm.utc_month,
+       pm.utc_day,
+       pm.local_year,
+       pm.local_month,
+       pm.local_day
 FROM analysis_messages AS am
 JOIN processed_message AS pm ON pm.message_id = am.id
 {where_clause}
@@ -49,6 +61,8 @@ def load_analytic_messages(
             question_mark_count=int(row[9]),
             exclamation_mark_count=int(row[10]),
             has_attachment=bool(row[11]),
+            utc_date=_date_string(row[12], row[13], row[14]),
+            local_date=_date_string(row[15], row[16], row[17]),
         )
         for row in rows
     ]

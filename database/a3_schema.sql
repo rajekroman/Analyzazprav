@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS conversation_session (
 CREATE TABLE IF NOT EXISTS conversation_thread (
     id INTEGER PRIMARY KEY,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
-    session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES conversation_session(id) ON DELETE CASCADE,
     method TEXT NOT NULL,
     confidence REAL NOT NULL,
     processing_run_id INTEGER NOT NULL REFERENCES processing_run(id)

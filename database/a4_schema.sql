@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS analytics_participant_summary (
     affection_marker_count INTEGER NOT NULL,
     negative_marker_count INTEGER NOT NULL,
     median_response_latency_seconds REAL,
+    median_response_effort_ratio REAL,
     engagement_score REAL NOT NULL,
     PRIMARY KEY(analytics_run_id, conversation_id, participant_id)
 );
@@ -56,7 +57,41 @@ CREATE TABLE IF NOT EXISTS analytics_response_latency (
     responder_id INTEGER NOT NULL REFERENCES participant(id),
     previous_turn_id INTEGER NOT NULL,
     response_turn_id INTEGER NOT NULL,
-    latency_seconds REAL NOT NULL CHECK(latency_seconds >= 0)
+    latency_seconds REAL CHECK(latency_seconds IS NULL OR latency_seconds >= 0),
+    response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS analytics_daily_participant (
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    period_date TEXT NOT NULL,
+    date_basis TEXT NOT NULL CHECK(date_basis IN ('local','utc')),
+    message_count INTEGER NOT NULL,
+    word_count INTEGER NOT NULL,
+    turn_count INTEGER NOT NULL,
+    initiations INTEGER NOT NULL,
+    question_count INTEGER NOT NULL,
+    affection_marker_count INTEGER NOT NULL,
+    negative_marker_count INTEGER NOT NULL,
+    median_response_latency_seconds REAL,
+    median_response_effort_ratio REAL,
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY(analytics_run_id, conversation_id, participant_id, period_date)
+);
+
+CREATE TABLE IF NOT EXISTS analytics_change_point (
+    id INTEGER PRIMARY KEY,
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    metric TEXT NOT NULL,
+    period_date TEXT NOT NULL,
+    value REAL NOT NULL,
+    baseline_median REAL NOT NULL,
+    robust_z_score REAL NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('increasing','decreasing')),
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS analytics_event (
@@ -76,6 +111,10 @@ CREATE INDEX IF NOT EXISTS idx_a4_participant_conversation
     ON analytics_participant_summary(conversation_id, participant_id, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_latency_conversation
     ON analytics_response_latency(conversation_id, responder_id, analytics_run_id);
+CREATE INDEX IF NOT EXISTS idx_a4_daily_conversation
+    ON analytics_daily_participant(conversation_id, participant_id, period_date, analytics_run_id);
+CREATE INDEX IF NOT EXISTS idx_a4_change_conversation
+    ON analytics_change_point(conversation_id, participant_id, period_date, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_event_conversation
     ON analytics_event(conversation_id, event_type, analytics_run_id);
 
@@ -92,6 +131,21 @@ JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
 CREATE VIEW IF NOT EXISTS analysis_a4_participants AS
 SELECT s.*
 FROM analytics_participant_summary AS s
+JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_a4_responses AS
+SELECT s.*
+FROM analytics_response_latency AS s
+JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_a4_daily AS
+SELECT s.*
+FROM analytics_daily_participant AS s
+JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_a4_changes AS
+SELECT s.*
+FROM analytics_change_point AS s
 JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
 
 CREATE VIEW IF NOT EXISTS analysis_a4_events AS

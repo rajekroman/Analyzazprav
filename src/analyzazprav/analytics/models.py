@@ -20,6 +20,20 @@ class AnalyticMessage:
     question_mark_count: int
     exclamation_mark_count: int
     has_attachment: bool = False
+    utc_date: str | None = None
+    local_date: str | None = None
+
+    @property
+    def period_date(self) -> str | None:
+        return self.local_date or self.utc_date
+
+    @property
+    def period_basis(self) -> str | None:
+        if self.local_date is not None:
+            return "local"
+        if self.utc_date is not None:
+            return "utc"
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,14 +54,15 @@ class Turn:
 
 
 @dataclass(frozen=True, slots=True)
-class ResponseLatency:
+class ResponseSample:
     conversation_id: int
     session_id: int
     from_participant_id: int
     responder_id: int
     previous_turn_id: int
     response_turn_id: int
-    latency_seconds: float
+    latency_seconds: float | None
+    response_effort_ratio: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +76,37 @@ class ConflictCandidate:
     source_message_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DailyParticipantMetric:
+    conversation_id: int
+    participant_id: int
+    period_date: str
+    date_basis: str
+    message_count: int
+    word_count: int
+    turn_count: int
+    initiations: int
+    question_count: int
+    affection_marker_count: int
+    negative_marker_count: int
+    median_response_latency_seconds: float | None
+    median_response_effort_ratio: float | None
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChangePoint:
+    conversation_id: int
+    participant_id: int
+    metric: str
+    period_date: str
+    value: float
+    baseline_median: float
+    robust_z_score: float
+    direction: str
+    source_message_ids: tuple[int, ...]
+
+
 @dataclass(slots=True)
 class ConversationAnalytics:
     conversation_id: int
@@ -71,7 +117,9 @@ class ConversationAnalytics:
     session_count: int
     participant_metrics: dict[int, dict[str, Any]] = field(default_factory=dict)
     reciprocity: dict[str, float | None] = field(default_factory=dict)
-    latency_samples: list[ResponseLatency] = field(default_factory=list)
+    response_samples: list[ResponseSample] = field(default_factory=list)
     conflicts: list[ConflictCandidate] = field(default_factory=list)
+    daily_metrics: list[DailyParticipantMetric] = field(default_factory=list)
+    change_points: list[ChangePoint] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)

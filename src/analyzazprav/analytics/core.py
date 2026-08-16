@@ -5,7 +5,8 @@ from statistics import median
 from typing import Iterable, Sequence
 
 from .config import AnalyticsConfig
-from .models import AnalyticMessage, ConflictCandidate, ConversationAnalytics, ResponseLatency, Turn
+from .models import AnalyticMessage, ConflictCandidate, ConversationAnalytics, ResponseSample, Turn
+from .trends import build_daily_metrics, detect_change_points
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -70,8 +71,8 @@ def build_turns(messages: Iterable[AnalyticMessage]) -> list[Turn]:
     return turns
 
 
-def response_latencies(turns: Sequence[Turn]) -> list[ResponseLatency]:
-    samples: list[ResponseLatency] = []
+def response_samples(turns: Sequence[Turn]) -> list[ResponseSample]:
+    samples: list[ResponseSample] = []
     for previous, current in zip(turns, turns[1:]):
         if previous.session_id != current.session_id:
             continue
@@ -79,20 +80,22 @@ def response_latencies(turns: Sequence[Turn]) -> list[ResponseLatency]:
             continue
         if previous.participant_id == current.participant_id:
             continue
-        if previous.end_us is None or current.start_us is None:
-            continue
-        latency_us = current.start_us - previous.end_us
-        if latency_us < 0:
-            continue
+        latency_seconds = None
+        if previous.end_us is not None and current.start_us is not None:
+            latency_us = current.start_us - previous.end_us
+            if latency_us >= 0:
+                latency_seconds = latency_us / 1_000_000
+        effort_ratio = current.word_count / max(1, previous.word_count)
         samples.append(
-            ResponseLatency(
+            ResponseSample(
                 conversation_id=current.conversation_id,
                 session_id=current.session_id,
                 from_participant_id=previous.participant_id,
                 responder_id=current.participant_id,
                 previous_turn_id=previous.turn_id,
                 response_turn_id=current.turn_id,
-                latency_seconds=latency_us / 1_000_000,
+                latency_seconds=latency_seconds,
+                response_effort_ratio=effort_ratio,
             )
         )
     return samples
@@ -118,7 +121,7 @@ def _reciprocity(participants: dict[int, dict[str, object]]) -> dict[str, float 
 def _participant_metrics(
     messages: Sequence[AnalyticMessage],
     turns: Sequence[Turn],
-    latencies: Sequence[ResponseLatency],
+    responses: Sequence[ResponseSample],
     config: AnalyticsConfig,
 ) -> dict[int, dict[str, object]]:
     participants = sorted({m.participant_id for m in messages if m.participant_id is not None})
@@ -129,7 +132,7 @@ def _participant_metrics(
     exclamations = Counter()
     affection = Counter()
     negative = Counter()
-    active_days: dict[int, set[int]] = defaultdict(set)
+    active_days: dict[int, set[object]] = defaultdict(set)
     for message in messages:
         if message.participant_id is None:
             continue
@@ -140,7 +143,9 @@ def _participant_metrics(
         exclamations[pid] += message.exclamation_mark_count
         affection[pid] += _marker_hits(message.text_clean, config.affection_markers)
         negative[pid] += _marker_hits(message.text_clean, config.negative_markers)
-        if message.timestamp_us is not None:
+        if message.period_date is not None:
+            active_days[pid].add(message.period_date)
+        elif message.timestamp_us is not None:
             active_days[pid].add(message.timestamp_us // 86_400_000_000)
 
     turn_count = Counter(t.participant_id for t in turns if t.participant_id is not None)
@@ -156,14 +161,19 @@ def _participant_metrics(
             known_initiated_sessions += 1
 
     latency_by_responder: dict[int, list[float]] = defaultdict(list)
-    for sample in latencies:
-        latency_by_responder[sample.responder_id].append(sample.latency_seconds)
+    effort_by_responder: dict[int, list[float]] = defaultdict(list)
+    for sample in responses:
+        if sample.latency_seconds is not None:
+            latency_by_responder[sample.responder_id].append(sample.latency_seconds)
+        effort_by_responder[sample.responder_id].append(sample.response_effort_ratio)
 
     known_turns = max(1, sum(turn_count.values()))
     result: dict[int, dict[str, object]] = {}
     for pid in participants:
         response_values = latency_by_responder.get(pid, [])
+        effort_values = effort_by_responder.get(pid, [])
         median_latency = median(response_values) if response_values else None
+        median_effort = median(effort_values) if effort_values else None
         activity_share = turn_count[pid] / known_turns
         initiation_share = initiations[pid] / max(1, known_initiated_sessions)
         responsiveness = (
@@ -193,6 +203,7 @@ def _participant_metrics(
             "affection_marker_count": affection[pid],
             "negative_marker_count": negative[pid],
             "median_response_latency_seconds": median_latency,
+            "median_response_effort_ratio": median_effort,
             "engagement_score": round(engagement, 6),
         }
     return result
@@ -284,9 +295,16 @@ def analyze_conversation(
         raise ValueError("analyze_conversation expects exactly one conversation")
 
     turns = build_turns(source)
-    latencies = response_latencies(turns)
-    metrics = _participant_metrics(source, turns, latencies, cfg)
+    responses = response_samples(turns)
+    metrics = _participant_metrics(source, turns, responses, cfg)
     conflicts = _conflict_candidates(turns, cfg)
+    daily_metrics = build_daily_metrics(source, turns, responses, cfg)
+    change_points = detect_change_points(
+        daily_metrics,
+        baseline_window_days=cfg.change_baseline_window_days,
+        min_baseline_days=cfg.change_min_baseline_days,
+        z_threshold=cfg.change_z_threshold,
+    )
     session_count = len({message.session_id for message in source})
     unknown_sender_count = sum(message.participant_id is None for message in source)
     message_ids = [message.message_id for message in source]
@@ -300,8 +318,10 @@ def analyze_conversation(
         session_count=session_count,
         participant_metrics=metrics,
         reciprocity=_reciprocity(metrics),
-        latency_samples=latencies,
+        response_samples=responses,
         conflicts=conflicts,
+        daily_metrics=daily_metrics,
+        change_points=change_points,
         turns=turns,
         diagnostics={
             "duplicate_message_ids": sorted(

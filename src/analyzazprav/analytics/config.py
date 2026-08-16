@@ -12,6 +12,9 @@ class AnalyticsConfig:
     responsiveness_reference_seconds: int = 6 * 60 * 60
     post_silence_reference_seconds: int = 18 * 60 * 60
     conflict_threshold: float = 0.55
+    change_baseline_window_days: int = 28
+    change_min_baseline_days: int = 7
+    change_z_threshold: float = 2.5
 
     affection_markers: tuple[str, ...] = field(
         default=("❤️", "❤", "💕", "😘", "🥰", "miluju", "miláčku", "zlatíčko", "love you")
@@ -52,6 +55,12 @@ class AnalyticsConfig:
             raise ValueError("post_silence_reference_seconds must be positive")
         if not 0 <= self.conflict_threshold <= 1:
             raise ValueError("conflict_threshold must be between 0 and 1")
+        if self.change_baseline_window_days < self.change_min_baseline_days:
+            raise ValueError("change baseline window must be >= minimum baseline days")
+        if self.change_min_baseline_days < 2:
+            raise ValueError("change_min_baseline_days must be >= 2")
+        if self.change_z_threshold <= 0:
+            raise ValueError("change_z_threshold must be positive")
         engagement_total = (
             self.engagement_activity_weight
             + self.engagement_initiation_weight
