@@ -9,20 +9,25 @@ Aktuální funkční slice podporuje:
 - obecné message CSV s hlavičkou;
 - JSON a JSONL message exporty;
 - TXT s explicitní hranicí recordu (`line`, `block`, `whole`);
+- deterministickou detekci podporovaného source formátu;
 - resolver skutečných souborů příloh + SHA-256;
 - source participant membership a metadata Apple konverzací;
-- auditní evidenci neemitovaných recordů přes `errors.jsonl`.
+- auditní evidenci neemitovaných recordů přes `errors.jsonl`;
+- source-level reconciliation přes `reconciliation.json`.
 
 ## Vlastnosti
 
 - původní `chat.db` se otevírá pouze pro čtení;
 - před parsingem A1 vytvoří dočasný konzistentní SQLite snapshot přes online backup API;
-- committed obsah aktivního `chat.db-wal` je součástí stejného logického snapshotu, který se následně hashují i parsuje;
+- committed obsah aktivního `chat.db-wal` je součástí stejného logického snapshotu, který se následně hashují, parsuje i reconciliuje;
 - A1 necheckpointuje ani nepřepisuje původní `chat.db` nebo WAL;
 - `manifest.source.sha256` u iMessage označuje hash neměnného logického SQLite snapshotu skutečně analyzovaného A1, ne samotného hlavního souboru bez WAL;
 - zprávy se exportují do `messages.jsonl` + `manifest.json`; serializační problémy jdou do `errors.jsonl`;
+- `reconciliation.json` ověřuje staging proti skutečnému source snapshotu;
 - jedna fyzická Apple `message.ROWID` vytváří právě jeden staging message record;
-- všechny `chat_message_join` vazby jsou zachovány zvlášť v `conversation_sources[]`, takže více chat vazeb nemůže duplikovat zprávu;
+- všechny unikátní `chat_message_join` vazby jsou zachovány zvlášť v `conversation_sources[]`, takže více chat vazeb nemůže duplikovat zprávu;
+- duplicitní raw `message_id/chat_id` join rows jsou jednotlivě evidované s outcome `duplicate`;
+- dangling/nepodporované source relations a neodkazované attachment rows jsou jednotlivě evidované s outcome `unsupported`;
 - Apple `chat.guid` je preferovaný source conversation key; fallback je explicitní `rowid:<id>` a raw ROWID se dál zachovává jako provenance;
 - zachovává se source message ID, GUID, sender handle, timestamp, `service`, reply GUID a metadata příloh;
 - pro Apple chaty se z `chat_handle_join` zachovají source participant handles a raw metadata řádku `chat`; hodnoty se cachují po `chat_id`;
@@ -37,7 +42,8 @@ Aktuální funkční slice podporuje:
 - datum s explicitním timezone offsetem se převádí do UTC; lokální datum bez offsetu zůstává raw a není falešně označeno jako UTC;
 - neznámý numerický timestamp se automaticky nepřevádí, protože bez znalosti epochy/jednotky by šlo o neauditovatelný odhad;
 - generic TXT nikdy nehádá sendera ani timestamp a hranice recordu je povinně deklarována uživatelem;
-- manifest rozlišuje `messages_seen` a `messages_emitted`; serializační chyba se zapíše do `errors.jsonl` se source identifikací a typem chyby;
+- manifest rozlišuje `messages_seen`, `messages_emitted`, `message_errors`, `reconciliation_errors`, `duplicates` a `unsupported`;
+- reconciliation mismatch vytvoří explicitní chybu a zvýší `counts.errors`, takže A2 takový bundle fail-closed odmítne;
 - vše běží lokálně, bez cloudu, externího API a AI.
 
 ## A1 → A2 kontrakt
@@ -50,12 +56,53 @@ Výstup:
 staging/
 ├── manifest.json
 ├── messages.jsonl
-└── errors.jsonl
+├── errors.jsonl
+└── reconciliation.json
 ```
 
-Prázdný `errors.jsonl` znamená, že během serializace nebyl vynechán žádný záznam. A7 může současně ověřit `messages_seen == messages_emitted` a `errors == 0`.
+`errors.jsonl` obsahuje importní nebo reconciliation chyby. `reconciliation.json` obsahuje raw source counts, jednotlivé `duplicate`/`unsupported` outcomes a explicitní boolean checks. Reconciliation stav `failed` vede k nenulovému `manifest.counts.errors`, takže bundle není způsobilý pro A2 ingest.
 
 Podrobný lossless kontrakt včetně `conversation_sources[]`, M:N memberships a snapshot identity je v `docs/A1_A2_CONTRACT.md`.
+
+## Detekce zdroje
+
+```bash
+az-import detect --source ~/Library/Messages/chat.db
+az-import detect --source ./export/messages.csv
+```
+
+Detekce je konzervativní:
+
+- SQLite se označí jako `imessage_chat_db` pouze pokud má Apple Messages `message` schema s požadovanými poli;
+- iMazing CSV vyžaduje iMazing chat-session header společně s message fields;
+- ostatní podporované headered CSV se označí jako generic CSV;
+- JSON/JSONL se strukturálně validuje během importu;
+- TXT vždy vyžaduje explicitní `--mode`;
+- neznámý nebo nejednoznačný source vrací `unknown`, nikoli odhadovaný parser.
+
+## Reconciliation
+
+Reconciliation se spouští automaticky při každém importu. Lze ji také zopakovat samostatně:
+
+```bash
+az-import reconcile \
+  --source ~/Library/Messages/chat.db \
+  --output-dir ./staging/imessage
+```
+
+Pro iMessage se kontroluje zejména:
+
+- logical snapshot SHA-256 proti manifestu;
+- právě jeden známý outcome pro každý `message.ROWID`;
+- přesná množina unikátních source message↔chat relations;
+- explicitní orphan messages;
+- přesná multiplicita validních message↔attachment relations;
+- `messages.jsonl`/`errors.jsonl` counts proti manifestu;
+- source identity každého emitovaného recordu;
+- přítomnost a unikátnost `source_record_key`;
+- konzistence primary conversation s prvním `conversation_sources[]` recordem.
+
+Raw duplicate join rows se zapisují jako `duplicate`; source rows/relations, které A1 nemůže bezpečně převést, se zapisují jako `unsupported`. Tyto outcomes nejsou potichu ztraceny a jsou dostupné A7.
 
 ## Apple Messages
 
@@ -70,7 +117,7 @@ az-import imessage \
 
 ### WAL a konzistentní snapshot
 
-macOS může mít nejnovější committed Messages data v `chat.db-wal`. A1 proto neprovádí prostou kopii nebo hash pouze hlavního souboru. SQLite online backup vytvoří dočasný neměnný logický snapshot viditelných committed dat. **Stejný snapshot se hashují i parsuje.**
+macOS může mít nejnovější committed Messages data v `chat.db-wal`. A1 proto neprovádí prostou kopii nebo hash pouze hlavního souboru. SQLite online backup vytvoří dočasný neměnný logický snapshot viditelných committed dat. **Stejný snapshot se hashují, parsuje i reconciliuje.**
 
 Manifest pak obsahuje mimo jiné:
 
@@ -156,6 +203,9 @@ TXT fallback záměrně neinterpretuje sendera ani datum. Pokud je potřeba stru
 Integrační suite ověřuje mimo jiné:
 
 - 1 fyzická message + 2 source chat vazby → 1 staging message + 2 A2 memberships;
+- duplicate source chat relation je evidovaná jako `duplicate`, nikoli jako druhá message;
+- neodkazovaný source attachment je evidovaný jako `unsupported`;
+- tampering s `messages.jsonl` způsobí reconciliation failure;
 - committed message existující v aktivním WAL je zahrnuta ve staging;
 - import nezmění bytes `chat.db` ani aktivního WAL;
 - dva importy stejného logického snapshotu vytvoří stejné `source.sha256` a `source_record_key`;
@@ -163,7 +213,8 @@ Integrační suite ověřuje mimo jiné:
 
 ## Další A1 slice
 
-1. reactions/Tapbacks a edit history;
-2. robustnější `attributedBody` decoder;
-3. explicitní mapping profil pro nestandardní/headerless CSV;
-4. A7 golden dataset generovaný přímo současným A1 importerem.
+1. ověření na reálném uživatelském `chat.db` + skutečný reconciliation report;
+2. reactions/Tapbacks a edit history;
+3. robustnější `attributedBody` decoder;
+4. explicitní mapping profil pro nestandardní/headerless CSV;
+5. A7 golden dataset generovaný přímo současným A1 importerem.
