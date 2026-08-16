@@ -49,6 +49,10 @@ def _pipeline_fixture(path: Path) -> None:
             "INSERT INTO analysis_attachment_sources VALUES (901, 9, 900, 2, 1, 1, 'imessage', 'snapshot', 'source-sha', '0.6.0', 'att-guid', 'occ-key', 'photo.jpg', '~/Library/Messages/Attachments/photo.jpg')"
         )
         conn.execute(
+            "CREATE TABLE analysis_a4_reconciliation (conversation_id INTEGER, reconciliation_ok INTEGER)"
+        )
+        conn.execute("INSERT INTO analysis_a4_reconciliation VALUES (42, 1)")
+        conn.execute(
             "CREATE TABLE analysis_a4_events (id INTEGER, conversation_id INTEGER, event_type TEXT, score REAL, start_at_utc_us INTEGER, end_at_utc_us INTEGER, factors_json TEXT, source_message_ids_json TEXT)"
         )
         conn.execute(
@@ -79,6 +83,31 @@ def _pipeline_fixture(path: Path) -> None:
             "CREATE TABLE analysis_a4_conversations (conversation_id INTEGER, source_message_count INTEGER, message_reciprocity REAL, initiation_reciprocity REAL)"
         )
         conn.execute("INSERT INTO analysis_a4_conversations VALUES (42, 4, 0.8, 0.5)")
+        conn.execute(
+            "CREATE TABLE analysis_a4_topics (analytics_run_id INTEGER, conversation_id INTEGER, topic_key TEXT, method TEXT, normalized_phrase TEXT, ngram_size INTEGER, document_frequency INTEGER, document_frequency_ratio REAL, occurrence_count INTEGER, participant_count INTEGER, salience REAL, first_period_date TEXT, last_period_date TEXT, source_message_ids_json TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO analysis_a4_topics VALUES (1, 42, 'topic:first', 'lexical_ngram_v1', 'první zpráva', 2, 2, 0.5, 2, 2, 1.5, '2026-08-01', '2026-08-01', '[\"1\", \"2\"]')"
+        )
+        conn.execute(
+            "CREATE TABLE analysis_a4_topic_evidence (analytics_run_id INTEGER, conversation_id INTEGER, topic_key TEXT, message_id INTEGER, participant_id INTEGER, period_date TEXT, date_basis TEXT, occurrence_count INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO analysis_a4_topic_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(1, 42, 'topic:first', 1, 7, '2026-08-01', 'utc', 1), (1, 42, 'topic:first', 2, 8, '2026-08-01', 'utc', 1)],
+        )
+        conn.execute(
+            "CREATE TABLE analysis_a4_topic_periods (analytics_run_id INTEGER, conversation_id INTEGER, topic_key TEXT, normalized_phrase TEXT, method TEXT, participant_id INTEGER, date_basis TEXT, period_kind TEXT, period_start TEXT, period_end TEXT, topic_message_count INTEGER, occurrence_count INTEGER, participant_period_message_count INTEGER, topic_message_share REAL)"
+        )
+        conn.execute(
+            "INSERT INTO analysis_a4_topic_periods VALUES (1, 42, 'topic:first', 'první zpráva', 'lexical_ngram_v1', 7, 'utc', 'week', '2026-07-27', '2026-08-02', 1, 1, 2, 0.5)"
+        )
+        conn.execute(
+            "CREATE TABLE analysis_a4_topic_period_reconciliation (analytics_run_id INTEGER, conversation_id INTEGER, evidence_row_count INTEGER, topic_count INTEGER, evidence_message_count INTEGER, dated_evidence_row_count INTEGER, undated_evidence_row_count INTEGER, unknown_participant_evidence_row_count INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO analysis_a4_topic_period_reconciliation VALUES (1, 42, 2, 1, 2, 2, 0, 0)"
+        )
         conn.commit()
 
 
@@ -87,9 +116,15 @@ def test_streamlit_app_renders_demo_workflow_without_exception():
     app.run()
     assert not app.exception
     assert app.title[0].value == "Analýza zpráv"
-    assert len(app.tabs) == 6
+    assert len(app.tabs) == 7
     assert [tab.label for tab in app.tabs] == [
-        "Konverzace", "Časová osa", "Grafy", "Významná období", "Vybrané zprávy", "Analýza",
+        "Konverzace",
+        "Časová osa",
+        "Grafy",
+        "Významná období",
+        "Lexikální témata",
+        "Vybrané zprávy",
+        "Analýza",
     ]
     assert app.sidebar.radio[0].value == "Demo"
     assert app.sidebar.selectbox[0].label == "Kontakt"
@@ -115,3 +150,5 @@ def test_streamlit_app_renders_a2_a4_sqlite_pipeline_without_exception(tmp_path)
     assert metrics["Canonical zprávy"] == "4"
     assert metrics["Bez času"] == "1"
     assert metrics["A4 nálezy"] == "1"
+    assert [tab.label for tab in app.tabs][4] == "Lexikální témata"
+    assert any(selectbox.label == "Lexikální téma" for selectbox in app.selectbox)
