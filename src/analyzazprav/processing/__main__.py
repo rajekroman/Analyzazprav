@@ -24,7 +24,12 @@ def main() -> int:
             session_gap_seconds=max(1, int(args.session_gap_hours * 3600)),
             duplicate_tolerance_seconds=args.duplicate_tolerance_seconds,
         )
-        result = process_messages(list(projection.messages), list(projection.relations), config)
+        result = process_messages(
+            list(projection.messages),
+            list(projection.relations),
+            config,
+            participants=list(projection.participants),
+        )
         store = ProcessingStore(conn)
         store.initialize()
         run_id = store.persist(result, config)
@@ -32,8 +37,11 @@ def main() -> int:
         print(
             f"A3 PASS run={run_id} processed_memberships={len(result.messages)} "
             f"canonical_messages={canonical_message_count} "
+            f"resolved_participants={len(result.resolved_participants)} "
+            f"aliases={len(result.participant_aliases)} "
             f"sender_runs={len(result.sender_runs)} sessions={len(result.sessions)} "
-            f"threads={len(result.threads)} duplicate_candidates={len(result.duplicate_candidates)}"
+            f"threads={len(result.threads)} duplicate_candidates={len(result.duplicate_candidates)} "
+            f"participant_candidates={len(result.participant_resolution_candidates)}"
         )
         return 0
     finally:
