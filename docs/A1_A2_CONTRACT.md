@@ -2,23 +2,32 @@
 
 ## Purpose
 
-A1 is source extraction. A2 is the authoritative normalization and SQLite layer.
+A1 is the source-extraction layer. A2 is the authoritative normalization and SQLite layer.
 
-A1 writes a staging bundle:
+The critical path is:
+
+```text
+immutable source → A1 staging → A2 canonical SQLite
+```
+
+A1 never writes canonical tables. A2 never silently repairs or discards an A1 source occurrence.
+
+## Staging bundle
+
+A1 writes:
 
 ```text
 staging/
 ├── manifest.json
-└── messages.jsonl
+├── messages.jsonl
+└── errors.jsonl
 ```
 
-A2 consumes that bundle through `ingest_a1_staging_bundle()` and creates canonical participants, conversations, messages, relations, attachments and provenance records.
+A2 consumes the bundle through `ingest_a1_staging_bundle()`.
 
-## Supported contract
+A2 accepts A1 `contract_version = "1"`. The iMessage parser currently emits parser version `0.4.0` and source-record-key algorithm version `2`.
 
-A2 currently accepts A1 `contract_version = "1"` and the `message` record emitted by the iMessage `chat.db` importer.
-
-Required manifest fields:
+Required manifest identity fields:
 
 - `contract_version`
 - `source.type`
@@ -26,152 +35,221 @@ Required manifest fields:
 - `parser.name`
 - `parser.version`
 - `outputs.messages`
+- `counts.messages_seen`
+- `counts.attachments_seen`
 - `counts.errors`
 
-Required message identity fields:
+For iMessage the manifest also documents:
 
-- `contract_version`
-- `record_type = "message"`
-- `source_type`
-- `source_sha256`
-- `source_record_key`
-- `source_message_id`
-- `conversation_source_id`
+```json
+{
+  "source_record_key": {
+    "algorithm": "sha256-unit-separator",
+    "version": "2",
+    "scope": "source_snapshot+message_rowid"
+  }
+}
+```
 
-A2 also consumes, when available:
+## One physical source message = one A1 record
 
-- `source_guid`
-- `timestamp_raw`
-- `timestamp_utc`
-- `timestamp_local`
-- `timezone_name` (or legacy alias `timezone`)
-- `timezone_offset_min`
-- `timestamp_precision`
-- `sender_handle`
-- `is_from_me`
-- `text`
-- `raw_text`
-- `text_source`
-- `service`
-- `reply_to_guid`
-- `attachments[]`
-- `raw_payload`
-- `metadata`
+For Apple `chat.db`, A1 iterates the `message` table directly. `chat_message_join` is **not** joined into the main message SELECT.
 
-## Import and source identity
+Therefore:
 
-A2 deliberately stores two different fingerprints in `import_run`:
+- one `message.ROWID` produces one staging message record;
+- zero, one or multiple chat memberships cannot change the number of emitted source messages;
+- attachment metadata is emitted once per physical source message;
+- `source_record_key` does not depend on chat membership.
 
-- `source_sha256` is the byte-level SHA-256 of the original A1 source (`manifest.source.sha256`); this is the authoritative bridge for A7 source reconciliation;
-- `source_fingerprint` identifies one concrete ingest representation and includes source SHA-256, A1 contract version, parser name and parser version.
+For iMessage v2 record identity is derived from immutable source SHA-256 + source table marker + `message.ROWID`.
 
-This distinction allows the same unchanged `chat.db` to be parsed again with a newer parser without pretending it is a different source file. The two import runs share `source_sha256` but have different `source_fingerprint` values and retain separate provenance rows.
+## Source conversation relations
 
-A7 should identify a staging run by `source_type + source_sha256 + parser_version` when a specific A1 export must be reconciled. It must not treat the ingest fingerprint as the raw source hash.
+A message retains the compatibility field `conversation_source_id`, but lossless cardinality is represented by:
+
+```json
+{
+  "conversation_sources": [
+    {
+      "source_conversation_key": "guid:iMessage;-;+420123456789",
+      "raw_chat_rowid": 7,
+      "chat_guid": "iMessage;-;+420123456789",
+      "service": "iMessage",
+      "participant_handles": ["+420123456789"],
+      "metadata": {}
+    }
+  ]
+}
+```
+
+Rules:
+
+- Apple `chat.guid` is preferred when available;
+- the source key is then `guid:<chat-guid>`;
+- when no GUID exists, A1 uses the explicit fallback `rowid:<chat-rowid>`;
+- raw chat ROWID is retained separately as provenance;
+- A2 additionally namespaces every source conversation key by the immutable source snapshot, so identical local ROWIDs from unrelated databases cannot collide;
+- an orphan source message is represented explicitly as `orphan:<message-rowid>` rather than being dropped.
+
+## A2 source snapshot and import-run identity
+
+A2 stores two distinct concepts:
+
+- `source_sha256` — byte-level identity of the immutable A1 source snapshot;
+- `source_fingerprint` — one concrete parser/contract ingest representation.
+
+The same unchanged source parsed by a newer parser therefore has:
+
+- the same `source_sha256`;
+- a different parser-aware `source_fingerprint`;
+- a new auditable import run;
+- additional provenance rows without unnecessary canonical duplication.
+
+A7 should reconcile a concrete A1 staging run using source type, source SHA-256, parser version/contract and source record keys. The parser-aware ingest fingerprint is not a replacement for the raw source hash.
+
+## Canonical message↔conversation cardinality
+
+A2 schema v5 represents membership explicitly:
+
+- `message` — canonical message entity;
+- `conversation` — canonical conversation entity;
+- `message_conversation` — M:N canonical membership;
+- `message_source` — one source message occurrence/provenance row;
+- `conversation_source` — source-snapshot-scoped conversation identity;
+- `message_source_conversation` — exact source relation connecting a source message occurrence to a source conversation and canonical membership.
+
+A convenience primary `message.conversation_id` remains for compatibility, but it is **not** the complete source-of-truth for memberships.
+
+A message linked to two source chats must remain:
+
+```text
+1 source message occurrence
+1 canonical message (when canonical identity proves this)
+2 source conversation relations
+2 canonical message memberships
+```
+
+No downstream layer may deduplicate those two membership rows merely because `message.id` is identical.
+
+## Canonical message identity and deduplication
+
+A2 distinguishes source occurrence identity from semantic duplicate detection.
+
+Technical reconciliation is conservative:
+
+1. same authoritative A1 `source_record_key` → reuse canonical message;
+2. same stable `(service, source_guid)` → reuse canonical message;
+3. otherwise create a new canonical message.
+
+Every parser/import occurrence remains separately traceable in `message_source`.
+
+Identical or similar text/timestamps without authoritative identity are never destructively merged by A2. Probable/similarity duplicate analysis belongs to A3 and remains non-destructive.
+
+## Attachments: blob identity vs occurrence identity
+
+A2 schema v5 separates:
+
+- canonical attachment/blob identity (`attachment`);
+- message attachment occurrence (`message_attachment_occurrence`);
+- source attachment provenance (`attachment_source`).
+
+Consequences:
+
+- one file SHA-256 may identify one canonical blob;
+- the same blob appearing twice on one message remains two occurrences with separate positions;
+- a retry of the same import run does not duplicate a source occurrence;
+- a newer parser run over the same immutable source reuses the same canonical occurrence and adds new provenance;
+- contradictory SHA-256 values for the same source attachment occurrence fail explicitly.
+
+Missing attachment bytes never cause the parent message to be dropped.
 
 ## Time normalization
 
 Canonical ordering time is `sent_at_utc_us`: Unix UTC microseconds stored as `INTEGER`.
 
-A1 may report Apple source precision as `nanosecond`. A2 converts the supplied UTC timestamp to microseconds and records canonical precision as `microsecond`; the original A1 precision remains in source metadata as `a1_source_timestamp_precision`. A2 therefore does not claim nanosecond precision after truncation to microseconds.
+Apple source precision may be nanosecond. A2 stores UTC microseconds and retains the stronger original precision in provenance; it does not claim nanosecond canonical precision after truncation.
 
-A2 also exposes explicit local-time fields on the canonical message:
+A2 also supports explicit source-local fields:
 
 - `sent_at_local_iso`
 - `timezone_name`
 - `timezone_offset_min`
 
-These fields are populated only from explicit source facts. A2 never derives a local wall-clock timestamp from UTC using the host machine timezone or another implicit timezone assumption.
+They are populated only when explicitly supplied by the source. A2 never derives local wall time using the host machine timezone.
 
-When `timestamp_local` is supplied, it must contain an explicit UTC offset. If `timezone_offset_min` is supplied separately it must agree with the offset encoded in `timestamp_local`. Offsets outside the supported civil range of ±14 hours are rejected. An offset embedded directly in `timestamp_local` may populate `timezone_offset_min` because that value is explicit in the source text, not inferred from UTC.
+`timestamp_local` must contain an explicit UTC offset. If `timezone_offset_min` is also supplied, the values must agree. Civil offsets outside ±14 hours are rejected.
 
-Current iMessage A1 output supplies `timestamp_utc` but does not yet supply source-local wall-clock/timezone fields. For those records A2 deliberately leaves `sent_at_local_iso`, `timezone_name` and `timezone_offset_min` as `NULL` rather than inventing values.
-
-Every explicit source-local observation is additionally retained in `message_source.metadata_json` under `a1_time_observation`. If multiple exact source occurrences disagree about local-time representation, A2 does not silently overwrite an existing canonical value; the conflicting source observation remains auditable in provenance.
-
-If A1 does not provide a valid timezone-aware `timestamp_utc`, A2 stores no invented UTC timestamp and uses `timestamp_quality = "unknown"`.
+Current iMessage A1 output supplies UTC-normalized time but does not invent source-local timezone facts, so those local fields normally remain `NULL`.
 
 ## Participant mapping
 
-- outgoing records map to the canonical self participant (`identity_type=self`, `identity_value=local`);
-- incoming e-mail handles map to `email`;
-- phone-like handles map to `phone`;
-- other handles map to `imessage_handle`;
-- missing incoming sender handles remain `NULL` rather than being guessed.
+A2 currently maps message senders deterministically:
 
-A1 does not decide canonical person identity across unrelated handles.
+- outgoing → canonical local self identity;
+- incoming email-like handle → `email`;
+- incoming phone-like handle → `phone`;
+- other handles → `imessage_handle`;
+- missing sender → `NULL` rather than guessed identity.
 
-## Conversation mapping
-
-`conversation_source_id` is stored in `conversation_source`. A2 does not infer cross-export conversation equivalence without stable evidence.
-
-## Message identity and idempotency
-
-A2 distinguishes source-record identity from semantic duplicate detection.
-
-Technical identity is resolved in this order:
-
-1. same A1 `source_record_key` → same canonical message;
-2. same stable `(service, source_guid)` → same canonical message;
-3. otherwise create a new canonical message.
-
-Every parser/import occurrence is retained in `message_source`. Reprocessing the same source with a newer parser version can therefore add new provenance without duplicating canonical messages.
-
-Similarity-based or probable duplicate detection belongs to A3 and must not delete or merge A2 canonical/source records.
-
-## Attachments
-
-A1 attachment metadata is preserved even when the file is unavailable.
-
-A2 availability states are:
-
-- `external` — source path exists locally or A1 provides a content hash without managed local storage;
-- `missing` — A1 provided a source path but that path does not exist;
-- `unknown` — metadata exists but availability cannot be established;
-- `available` / `corrupt` are reserved for later managed-storage verification.
-
-Missing attachment bytes never cause the parent message to be dropped.
+A1 also preserves source chat participant handles inside each `conversation_sources[]` relation. Cross-handle/person identity resolution remains an A2/A3 integration concern and is never guessed by A1.
 
 ## Reply relations
 
-A1 `reply_to_guid` is resolved after message ingestion. When the target GUID exists, A2 creates `message_relation(relation_type='reply_to')`.
+A1 `reply_to_guid` is resolved after message ingestion. If the target stable GUID exists, A2 creates an explicit `message_relation(relation_type='reply_to')`.
 
-Unresolved reply GUIDs are not converted into guessed temporal relations. A3 may use only source-evidenced relations as proof of replies.
+Temporal adjacency alone is never converted into proof of a reply.
 
 ## Fail-closed rules
 
-A2 refuses canonical ingest when:
+A2 refuses or fails canonical ingest when, among other conditions:
 
-- the contract version is unsupported;
+- the A1 contract version is unsupported;
 - manifest source identity is incomplete;
-- `counts.errors` is non-zero;
-- a record does not match manifest source identity;
-- required source record identifiers are missing;
-- the actual JSONL message count disagrees with `manifest.counts.messages_seen`;
-- `timestamp_local` is present without an explicit offset;
-- explicit local-time offset fields disagree or lie outside ±14 hours.
+- `counts.errors != 0`;
+- record source identity disagrees with the manifest;
+- required source identifiers are absent;
+- parsed message count differs from `counts.messages_seen`;
+- parsed attachment occurrence count differs from `counts.attachments_seen`;
+- explicit source time fields contradict each other;
+- one source attachment occurrence produces conflicting content hashes.
 
-A failed import is recorded as `failed`; local-time validation happens before import creation so invalid explicit time metadata cannot leave a falsely completed import run.
+A failed run is recorded as failed where an import run already exists; pre-ingest validation that can be completed before a run is created fails before canonical data is written.
 
 ## Database migrations
 
-A2 uses append-only numbered migrations. Current chain:
+A2 uses append-only migrations:
 
-1. `001_initial.sql` — original canonical A2 schema;
-2. `002_a1_staging_contract.sql` — A1 source-record provenance and A2/A3 duplicate-responsibility split;
-3. `003_source_content_hash.sql` — explicit original-source SHA-256 for exact A7 reconciliation;
-4. `004_explicit_local_time.sql` — canonical source-local timestamp/timezone fields and timezone-offset constraints.
+1. `001_initial.sql` — initial canonical entities;
+2. `002_a1_staging_contract.sql` — A1 provenance contract;
+3. `003_source_content_hash.sql` — raw source SHA-256;
+4. `004_explicit_local_time.sql` — explicit source-local time fields;
+5. `005_lossless_membership.sql` — source-snapshot-safe conversation identity, M:N memberships, source relation provenance and attachment occurrences.
 
-Existing A2 databases are upgraded in place; migration tests verify canonical message/source rows survive the v1 → current upgrade.
+Migration tests verify populated legacy databases upgrade without losing canonical/source messages.
 
-## Downstream A2 views
+## Downstream analytical views
 
-A3+ may rely on:
+A3+ should use the stable A2 views rather than source-specific schemas:
 
-- `analysis_messages` — includes UTC and explicit source-local time fields;
-- `analysis_attachments`
-- `analysis_conversations`
-- `analysis_message_sources`
-- `message_relation`
+- `analysis_messages` — **one row per message-conversation membership**, includes `membership_id`;
+- `analysis_conversations`;
+- `analysis_attachments` — one row per attachment occurrence;
+- `analysis_message_sources` — source provenance;
+- `analysis_message_memberships` — canonical and source relation traceability;
+- `message_relation` — explicit source-evidenced relations.
 
-Downstream modules must not depend on the physical A1 `chat.db` schema.
+The same canonical message may therefore appear in multiple `analysis_messages` rows when source evidence places it in multiple conversations. A3/A4/A6 must use membership identity, not only canonical message ID.
+
+## End-to-end regression gate
+
+The repository includes a synthetic integration test that executes:
+
+```text
+Apple chat.db
+  → A1 iMessage staging
+  → A2 schema v5 ingest
+  → SQLite integrity/provenance checks
+```
+
+The fixture deliberately places one physical source message into two chats. Passing requires one source/canonical message and two preserved memberships/relations, with the A1 `source_record_key` surviving unchanged into A2 provenance.
