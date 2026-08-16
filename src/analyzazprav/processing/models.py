@@ -22,14 +22,16 @@ class AttachmentRef:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalMessage:
-    """Read-only projection of one A2 canonical message."""
+    """Read-only A2 projection of one message-conversation membership."""
 
+    membership_id: int
     id: int
     conversation_id: int
     sender_id: int | None
     timestamp_us: int | None
     text: str | None = None
     source_message_id: str | None = None
+    source_record_keys: tuple[str, ...] = ()
     source_order: int | None = None
     timezone_offset_min: int | None = None
     message_type: str = "text"
@@ -38,6 +40,8 @@ class CanonicalMessage:
 
 @dataclass(frozen=True, slots=True)
 class MessageRelation:
+    """Canonical A2 message-level relation; A3 resolves it to shared memberships."""
+
     source_message_id: int
     target_message_id: int
     relation_type: str
@@ -64,26 +68,30 @@ class SenderRun:
     id: int
     conversation_id: int
     sender_id: int | None
+    first_membership_id: int
+    last_membership_id: int
     first_message_id: int
     last_message_id: int
     start_us: int | None
     end_us: int | None
     message_count: int
     char_count: int
-    method: str = "deterministic_sender_run_v1"
+    method: str = "deterministic_sender_run_v2"
 
 
 @dataclass(frozen=True, slots=True)
 class Session:
     id: int
     conversation_id: int
+    first_membership_id: int
+    last_membership_id: int
     first_message_id: int
     last_message_id: int
     start_us: int | None
     end_us: int | None
     message_count: int
     gap_threshold_us: int
-    method: str = "temporal_gap_v1"
+    method: str = "temporal_gap_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +99,7 @@ class Thread:
     id: int
     conversation_id: int
     session_id: int | None
+    membership_ids: tuple[int, ...]
     message_ids: tuple[int, ...]
     method: str
     confidence: float
@@ -132,7 +141,9 @@ class MessageFeatures:
 
 @dataclass(frozen=True, slots=True)
 class ProcessedMessage:
+    membership_id: int
     message_id: int
+    conversation_id: int
     sequence_number: int
     text_clean: str | None
     sender_run_id: int
