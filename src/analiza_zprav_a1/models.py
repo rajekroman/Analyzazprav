@@ -20,6 +20,23 @@ class AttachmentRecord:
 
 
 @dataclass(slots=True)
+class ConversationSourceRecord:
+    """One source-level message↔conversation relation.
+
+    `source_conversation_key` is stable inside an immutable source snapshot. A
+    real Apple chat GUID is preferred; a database-local ROWID is retained only
+    as an explicitly labelled fallback/provenance value.
+    """
+
+    source_conversation_key: str
+    raw_chat_rowid: int | None = None
+    chat_guid: str | None = None
+    service: str | None = None
+    participant_handles: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class MessageRecord:
     source_message_id: str
     source_guid: str | None
@@ -33,6 +50,7 @@ class MessageRecord:
     raw_text: str | None
     text_source: str | None
     service: str | None
+    conversation_sources: list[ConversationSourceRecord] = field(default_factory=list)
     conversation_participant_handles: list[str] = field(default_factory=list)
     conversation_metadata: dict[str, Any] = field(default_factory=dict)
     reply_to_guid: str | None = None
