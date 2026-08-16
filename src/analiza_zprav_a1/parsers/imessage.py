@@ -32,6 +32,8 @@ class IMessageParser:
     def iter_messages(self) -> Iterator[MessageRecord]:
         with self._connect() as conn:
             tables = self._tables(conn)
+            participant_cache: dict[int, list[str]] = {}
+            conversation_cache: dict[int, dict[str, object]] = {}
             mcols = self._columns(conn, "message")
             if not mcols:
                 raise ValueError("The source DB does not contain an Apple Messages 'message' table")
@@ -79,6 +81,16 @@ class IMessageParser:
                 message_rowid = int(row["_message_rowid"])
                 chat_id = row["_chat_rowid"]
                 conversation_source_id = str(chat_id) if chat_id is not None else f"orphan:{message_rowid}"
+                participants: list[str] = []
+                conversation_metadata: dict[str, object] = {}
+                if chat_id is not None:
+                    chat_rowid = int(chat_id)
+                    if chat_rowid not in participant_cache:
+                        participant_cache[chat_rowid] = self._participants_for_chat(conn, chat_rowid, tables)
+                    if chat_rowid not in conversation_cache:
+                        conversation_cache[chat_rowid] = self._conversation_metadata(conn, chat_rowid, tables)
+                    participants = participant_cache[chat_rowid]
+                    conversation_metadata = conversation_cache[chat_rowid]
 
                 raw_payload = {
                     key: json_safe(row[key])
@@ -99,11 +111,45 @@ class IMessageParser:
                     raw_text=raw_text,
                     text_source=text_source,
                     service=row["_service"],
+                    conversation_participant_handles=list(participants),
+                    conversation_metadata=dict(conversation_metadata),
                     reply_to_guid=row["_reply_to_guid"],
                     attachments=self._attachments_for(conn, message_rowid),
                     raw_payload=raw_payload,
                     metadata={},
                 )
+
+    @staticmethod
+    def _participants_for_chat(
+        conn: sqlite3.Connection, chat_id: int, tables: set[str]
+    ) -> list[str]:
+        if "chat_handle_join" not in tables or "handle" not in tables:
+            return []
+        rows = conn.execute(
+            """
+            SELECT h.id
+            FROM chat_handle_join chj
+            JOIN handle h ON h.ROWID=chj.handle_id
+            WHERE chj.chat_id=?
+            ORDER BY h.ROWID
+            """,
+            (chat_id,),
+        )
+        return [str(row[0]) for row in rows if row[0] is not None]
+
+    @staticmethod
+    def _conversation_metadata(
+        conn: sqlite3.Connection, chat_id: int, tables: set[str]
+    ) -> dict[str, object]:
+        if "chat" not in tables:
+            return {}
+        row = conn.execute(
+            "SELECT c.*, c.ROWID AS _chat_rowid FROM chat c WHERE c.ROWID=?",
+            (chat_id,),
+        ).fetchone()
+        if row is None:
+            return {}
+        return {key: json_safe(row[key]) for key in row.keys() if not key.startswith("_")}
 
     def _attachments_for(self, conn: sqlite3.Connection, message_id: int) -> list[AttachmentRecord]:
         tables = self._tables(conn)
@@ -111,7 +157,7 @@ class IMessageParser:
             return []
         rows = conn.execute(
             """
-            SELECT a.*, a.ROWID AS _attachment_rowid
+            SELECT a.* , a.ROWID AS _attachment_rowid
             FROM message_attachment_join maj
             JOIN attachment a ON a.ROWID=maj.attachment_id
             WHERE maj.message_id=?
