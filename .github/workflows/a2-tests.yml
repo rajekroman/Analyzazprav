@@ -8,7 +8,8 @@ on:
     paths:
       - 'database/**'
       - 'src/analyzazprav/normalization/**'
-      - 'tests/test_a2_database.py'
+      - 'tests/test_a2_*.py'
+      - 'docs/A1_A2_CONTRACT.md'
       - 'pyproject.toml'
       - '.github/workflows/a2-tests.yml'
 

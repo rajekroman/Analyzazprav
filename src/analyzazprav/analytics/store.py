@@ -9,7 +9,7 @@ from typing import Sequence
 from .config import AnalyticsConfig
 from .models import ConversationAnalytics
 
-ANALYTICS_VERSION = "2"
+ANALYTICS_VERSION = "3"
 
 
 class AnalyticsStore:
@@ -35,6 +35,9 @@ class AnalyticsStore:
         # draft schema never touches A2 canonical or A3 processed source tables.
         for view in (
             "analysis_a4_events",
+            "analysis_a4_regimes",
+            "analysis_a4_engagement_signals",
+            "analysis_a4_periods",
             "analysis_a4_changes",
             "analysis_a4_daily",
             "analysis_a4_responses",
@@ -45,6 +48,9 @@ class AnalyticsStore:
             self.conn.execute(f"DROP VIEW IF EXISTS {view}")
         for table in (
             "analytics_event",
+            "analytics_dyadic_regime",
+            "analytics_engagement_signal",
+            "analytics_period_participant",
             "analytics_change_point",
             "analytics_daily_participant",
             "analytics_response_latency",
@@ -199,6 +205,60 @@ class AnalyticsStore:
                             json.dumps(row.source_message_ids),
                         )
                         for row in result.daily_metrics
+                    ],
+                )
+                self.conn.executemany(
+                    """INSERT INTO analytics_period_participant(
+                           analytics_run_id, conversation_id, participant_id, period_kind,
+                           period_start, period_end, date_basis, message_count, word_count,
+                           turn_count, initiations, question_count, affection_marker_count,
+                           negative_marker_count, median_response_latency_seconds,
+                           median_response_effort_ratio, source_message_ids_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id, row.conversation_id, row.participant_id, row.period_kind,
+                            row.period_start, row.period_end, row.date_basis, row.message_count,
+                            row.word_count, row.turn_count, row.initiations, row.question_count,
+                            row.affection_marker_count, row.negative_marker_count,
+                            row.median_response_latency_seconds, row.median_response_effort_ratio,
+                            json.dumps(row.source_message_ids),
+                        )
+                        for row in result.period_metrics
+                    ],
+                )
+                self.conn.executemany(
+                    """INSERT INTO analytics_engagement_signal(
+                           analytics_run_id, conversation_id, participant_id, period_start,
+                           period_end, score, direction, component_scores_json,
+                           source_message_ids_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id, signal.conversation_id, signal.participant_id,
+                            signal.period_start, signal.period_end, signal.score, signal.direction,
+                            json.dumps(signal.component_scores, sort_keys=True),
+                            json.dumps(signal.source_message_ids),
+                        )
+                        for signal in result.engagement_signals
+                    ],
+                )
+                self.conn.executemany(
+                    """INSERT INTO analytics_dyadic_regime(
+                           analytics_run_id, conversation_id, period_start, period_end,
+                           participant_a_id, participant_a_direction, participant_a_score,
+                           participant_b_id, participant_b_direction, participant_b_score,
+                           regime_type, source_message_ids_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            run_id, regime.conversation_id, regime.period_start, regime.period_end,
+                            regime.participant_a_id, regime.participant_a_direction,
+                            regime.participant_a_score, regime.participant_b_id,
+                            regime.participant_b_direction, regime.participant_b_score,
+                            regime.regime_type, json.dumps(regime.source_message_ids),
+                        )
+                        for regime in result.dyadic_regimes
                     ],
                 )
                 self.conn.executemany(

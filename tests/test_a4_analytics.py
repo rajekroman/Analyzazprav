@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -157,10 +158,7 @@ class AnalyticsEngineTests(unittest.TestCase):
             ]
         )
         rows = [row for row in result.daily_metrics if row.participant_id == 1]
-        self.assertEqual(
-            [row.period_date for row in rows],
-            ["2026-01-01", "2026-01-02", "2026-01-03"],
-        )
+        self.assertEqual([row.period_date for row in rows], ["2026-01-01", "2026-01-02", "2026-01-03"])
         self.assertEqual([row.message_count for row in rows], [1, 0, 1])
         self.assertEqual(rows[1].date_basis, "local")
 
@@ -202,6 +200,56 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(changes[0].direction, "increasing")
         self.assertEqual(len(changes[0].source_message_ids), 6)
 
+    def test_weekly_monthly_aggregation_and_mutual_approach_regime(self) -> None:
+        source: list[AnalyticMessage] = []
+        next_id = 1
+        next_session = 1
+        start = date(2026, 1, 5)
+        for week in range(4):
+            day = (start + timedelta(days=7 * week)).isoformat()
+            for participant in (1, 2):
+                source.append(
+                    message(
+                        next_id, participant, next_id * 10, session=next_session,
+                        sequence=next_id, local_date=day,
+                    )
+                )
+                next_id += 1
+                next_session += 1
+
+        current_day = (start + timedelta(days=28)).isoformat()
+        for participant in (1, 2):
+            session_id = next_session
+            next_session += 1
+            for _ in range(6):
+                source.append(
+                    message(
+                        next_id, participant, next_id * 10, session=session_id,
+                        sequence=next_id, local_date=current_day,
+                    )
+                )
+                next_id += 1
+
+        result = analyze_conversation(source)
+        weekly = [row for row in result.period_metrics if row.period_kind == "week"]
+        monthly = [row for row in result.period_metrics if row.period_kind == "month"]
+        self.assertEqual(len(weekly), 10)
+        self.assertGreaterEqual(len(monthly), 2)
+
+        current_signals = [
+            signal for signal in result.engagement_signals
+            if signal.period_start == current_day
+        ]
+        self.assertEqual(len(current_signals), 2)
+        self.assertEqual({signal.direction for signal in current_signals}, {"increase"})
+        regimes = [
+            regime for regime in result.dyadic_regimes
+            if regime.period_start == current_day
+        ]
+        self.assertEqual(len(regimes), 1)
+        self.assertEqual(regimes[0].regime_type, "mutual_approach")
+        self.assertEqual(len(regimes[0].source_message_ids), 12)
+
     def test_store_persists_responses_daily_series_and_change_points(self) -> None:
         conn = create_contract_db()
         result = analyze_database(conn)[0]
@@ -222,6 +270,10 @@ class AnalyticsEngineTests(unittest.TestCase):
         self.assertEqual(response, (60.0, 1.0))
         daily_count = conn.execute("SELECT COUNT(*) FROM analysis_a4_daily").fetchone()[0]
         self.assertEqual(daily_count, 2)
+        period_count = conn.execute("SELECT COUNT(*) FROM analysis_a4_periods").fetchone()[0]
+        self.assertEqual(period_count, 4)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM analysis_a4_engagement_signals").fetchone()[0], 0)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM analysis_a4_regimes").fetchone()[0], 0)
         self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_initialize_rebuilds_obsolete_a4_derived_schema_only(self) -> None:

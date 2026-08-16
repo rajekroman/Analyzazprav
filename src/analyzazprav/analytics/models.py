@@ -107,6 +107,53 @@ class ChangePoint:
     source_message_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PeriodParticipantMetric:
+    conversation_id: int
+    participant_id: int
+    period_kind: str
+    period_start: str
+    period_end: str
+    date_basis: str
+    message_count: int
+    word_count: int
+    turn_count: int
+    initiations: int
+    question_count: int
+    affection_marker_count: int
+    negative_marker_count: int
+    median_response_latency_seconds: float | None
+    median_response_effort_ratio: float | None
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EngagementPeriodSignal:
+    conversation_id: int
+    participant_id: int
+    period_start: str
+    period_end: str
+    score: float
+    direction: str
+    component_scores: dict[str, float]
+    source_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DyadicRegime:
+    conversation_id: int
+    period_start: str
+    period_end: str
+    participant_a_id: int
+    participant_a_direction: str
+    participant_a_score: float
+    participant_b_id: int
+    participant_b_direction: str
+    participant_b_score: float
+    regime_type: str
+    source_message_ids: tuple[int, ...]
+
+
 @dataclass(slots=True)
 class ConversationAnalytics:
     conversation_id: int
@@ -121,5 +168,8 @@ class ConversationAnalytics:
     conflicts: list[ConflictCandidate] = field(default_factory=list)
     daily_metrics: list[DailyParticipantMetric] = field(default_factory=list)
     change_points: list[ChangePoint] = field(default_factory=list)
+    period_metrics: list[PeriodParticipantMetric] = field(default_factory=list)
+    engagement_signals: list[EngagementPeriodSignal] = field(default_factory=list)
+    dyadic_regimes: list[DyadicRegime] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)

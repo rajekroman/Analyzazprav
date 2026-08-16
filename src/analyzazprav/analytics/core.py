@@ -6,7 +6,13 @@ from typing import Iterable, Sequence
 
 from .config import AnalyticsConfig
 from .models import AnalyticMessage, ConflictCandidate, ConversationAnalytics, ResponseSample, Turn
-from .trends import build_daily_metrics, detect_change_points
+from .trends import (
+    build_daily_metrics,
+    build_dyadic_regimes,
+    build_engagement_signals,
+    build_period_metrics,
+    detect_change_points,
+)
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -299,6 +305,15 @@ def analyze_conversation(
     metrics = _participant_metrics(source, turns, responses, cfg)
     conflicts = _conflict_candidates(turns, cfg)
     daily_metrics = build_daily_metrics(source, turns, responses, cfg)
+    weekly_metrics = build_period_metrics(
+        source, turns, responses, cfg, period_kind="week"
+    )
+    monthly_metrics = build_period_metrics(
+        source, turns, responses, cfg, period_kind="month"
+    )
+    period_metrics = weekly_metrics + monthly_metrics
+    engagement_signals = build_engagement_signals(weekly_metrics, cfg)
+    dyadic_regimes = build_dyadic_regimes(engagement_signals)
     change_points = detect_change_points(
         daily_metrics,
         baseline_window_days=cfg.change_baseline_window_days,
@@ -322,6 +337,9 @@ def analyze_conversation(
         conflicts=conflicts,
         daily_metrics=daily_metrics,
         change_points=change_points,
+        period_metrics=period_metrics,
+        engagement_signals=engagement_signals,
+        dyadic_regimes=dyadic_regimes,
         turns=turns,
         diagnostics={
             "duplicate_message_ids": sorted(

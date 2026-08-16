@@ -4,20 +4,13 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
-
-CREATE TABLE IF NOT EXISTS schema_migration (
-    version INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    applied_at_utc_us INTEGER NOT NULL
-);
+INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('schema_version', '1');
 
 CREATE TABLE IF NOT EXISTS import_run (
     id INTEGER PRIMARY KEY,
     source_type TEXT NOT NULL,
     source_path TEXT,
     source_fingerprint TEXT NOT NULL,
-    source_sha256 TEXT,
     parser_version TEXT,
     normalizer_version TEXT NOT NULL DEFAULT '1',
     started_at_utc_us INTEGER NOT NULL,
@@ -27,8 +20,6 @@ CREATE TABLE IF NOT EXISTS import_run (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     UNIQUE(source_type, source_fingerprint)
 );
-CREATE INDEX IF NOT EXISTS idx_import_run_source_sha256
-ON import_run(source_type, source_sha256, parser_version);
 
 CREATE TABLE IF NOT EXISTS participant (
     id INTEGER PRIMARY KEY,
@@ -111,8 +102,6 @@ CREATE TABLE IF NOT EXISTS message_source (
     source_message_id TEXT,
     source_conversation_id TEXT,
     source_row_id TEXT,
-    source_record_key TEXT,
-    source_contract_version TEXT,
     raw_timestamp TEXT,
     raw_text TEXT,
     source_hash TEXT NOT NULL,
@@ -120,11 +109,22 @@ CREATE TABLE IF NOT EXISTS message_source (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     UNIQUE(import_run_id, source_hash)
 );
-CREATE INDEX IF NOT EXISTS idx_message_source_record_key
-ON message_source(source_type, source_record_key) WHERE source_record_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_message_source_source_id
 ON message_source(source_type, source_message_id) WHERE source_message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_message_source_message ON message_source(message_id);
+
+CREATE TABLE IF NOT EXISTS duplicate_candidate (
+    id INTEGER PRIMARY KEY,
+    message_id_a INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+    message_id_b INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    confidence REAL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','confirmed_duplicate','confirmed_distinct','ignored')),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    CHECK(message_id_a < message_id_b),
+    UNIQUE(message_id_a, message_id_b, reason)
+);
 
 CREATE TABLE IF NOT EXISTS message_relation (
     id INTEGER PRIMARY KEY,
@@ -188,9 +188,3 @@ CREATE VIEW IF NOT EXISTS analysis_attachments AS
 SELECT ma.message_id, a.id AS attachment_id, a.sha256, a.mime_type,
        a.size_bytes, a.filename, a.storage_path, a.availability, ma.position
 FROM message_attachment ma JOIN attachment a ON a.id = ma.attachment_id;
-
-CREATE VIEW IF NOT EXISTS analysis_message_sources AS
-SELECT ms.message_id, ms.source_type, ms.source_message_id, ms.source_conversation_id,
-       ms.source_row_id, ms.source_record_key, ms.source_contract_version,
-       ms.raw_timestamp, ms.raw_text, ms.source_hash, ms.import_run_id
-FROM message_source ms;

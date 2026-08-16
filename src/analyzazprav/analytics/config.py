@@ -15,6 +15,9 @@ class AnalyticsConfig:
     change_baseline_window_days: int = 28
     change_min_baseline_days: int = 7
     change_z_threshold: float = 2.5
+    regime_min_baseline_periods: int = 4
+    regime_signal_threshold: float = 10.0
+    regime_z_clip: float = 2.5
 
     affection_markers: tuple[str, ...] = field(
         default=("❤️", "❤", "💕", "😘", "🥰", "miluju", "miláčku", "zlatíčko", "love you")
@@ -46,6 +49,13 @@ class AnalyticsConfig:
     conflict_exclamation_weight: float = 0.15
     conflict_post_silence_weight: float = 0.15
 
+    regime_activity_weight: float = 0.25
+    regime_initiation_weight: float = 0.20
+    regime_responsiveness_weight: float = 0.20
+    regime_effort_weight: float = 0.15
+    regime_question_weight: float = 0.10
+    regime_affection_weight: float = 0.10
+
     def __post_init__(self) -> None:
         if self.rapid_exchange_seconds <= 0:
             raise ValueError("rapid_exchange_seconds must be positive")
@@ -61,6 +71,12 @@ class AnalyticsConfig:
             raise ValueError("change_min_baseline_days must be >= 2")
         if self.change_z_threshold <= 0:
             raise ValueError("change_z_threshold must be positive")
+        if self.regime_min_baseline_periods < 2:
+            raise ValueError("regime_min_baseline_periods must be >= 2")
+        if not 0 < self.regime_signal_threshold <= 100:
+            raise ValueError("regime_signal_threshold must be in (0, 100]")
+        if self.regime_z_clip <= 0:
+            raise ValueError("regime_z_clip must be positive")
         engagement_total = (
             self.engagement_activity_weight
             + self.engagement_initiation_weight
@@ -78,6 +94,16 @@ class AnalyticsConfig:
             raise ValueError("engagement weights must sum to 1.0")
         if abs(conflict_total - 1.0) > 1e-9:
             raise ValueError("conflict weights must sum to 1.0")
+        regime_total = (
+            self.regime_activity_weight
+            + self.regime_initiation_weight
+            + self.regime_responsiveness_weight
+            + self.regime_effort_weight
+            + self.regime_question_weight
+            + self.regime_affection_weight
+        )
+        if abs(regime_total - 1.0) > 1e-9:
+            raise ValueError("regime weights must sum to 1.0")
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

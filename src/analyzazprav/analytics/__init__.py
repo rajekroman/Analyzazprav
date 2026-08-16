@@ -3,7 +3,15 @@
 from .adapter import analyze_database, load_analytic_messages
 from .config import AnalyticsConfig
 from .core import analyze_conversation, build_turns
-from .models import AnalyticMessage, ChangePoint, ConversationAnalytics, DailyParticipantMetric
+from .models import (
+    AnalyticMessage,
+    ChangePoint,
+    ConversationAnalytics,
+    DailyParticipantMetric,
+    DyadicRegime,
+    EngagementPeriodSignal,
+    PeriodParticipantMetric,
+)
 from .store import AnalyticsStore
 
 __all__ = [
@@ -13,6 +21,9 @@ __all__ = [
     "ChangePoint",
     "ConversationAnalytics",
     "DailyParticipantMetric",
+    "DyadicRegime",
+    "EngagementPeriodSignal",
+    "PeriodParticipantMetric",
     "analyze_conversation",
     "analyze_database",
     "build_turns",
