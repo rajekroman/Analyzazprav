@@ -1,0 +1,28 @@
+name: A5 tests
+
+on:
+  pull_request:
+    paths:
+      - "src/analyzazprav/a5_ai/**"
+      - "tests/a5_ai/**"
+      - ".github/workflows/a5-tests.yml"
+  push:
+    branches:
+      - "agent/a5-ai-analysis"
+    paths:
+      - "src/analyzazprav/a5_ai/**"
+      - "tests/a5_ai/**"
+      - ".github/workflows/a5-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run A5 unit and integration tests
+        run: python -m unittest discover -s tests/a5_ai -p 'test_*.py' -v
+      - name: Compile A5 package
+        run: python -m compileall -q src/analyzazprav/a5_ai tests/a5_ai
