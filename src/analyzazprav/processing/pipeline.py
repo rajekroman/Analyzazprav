@@ -13,7 +13,7 @@ from .structure import (
 )
 from .text import clean_text
 
-PROCESSING_VERSION = "3"
+PROCESSING_VERSION = "4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +35,10 @@ def process_messages(
     config: ProcessingConfig | None = None,
 ) -> ProcessingResult:
     cfg = config or ProcessingConfig()
+    membership_ids = [message.membership_id for message in messages]
+    if len(set(membership_ids)) != len(membership_ids):
+        raise ValueError("A3 input contains duplicate membership_id values")
+
     grouped = ordered_by_conversation(messages)
     sender_runs, run_map = build_sender_runs(grouped)
     sessions, session_map = build_sessions(
@@ -51,15 +55,18 @@ def process_messages(
     processed: list[ProcessedMessage] = []
     for conversation_id in sorted(grouped):
         for sequence_number, message in enumerate(grouped[conversation_id], start=1):
+            membership_id = message.membership_id
             processed.append(
                 ProcessedMessage(
+                    membership_id=membership_id,
                     message_id=message.id,
+                    conversation_id=conversation_id,
                     sequence_number=sequence_number,
                     text_clean=clean_text(message.text),
-                    sender_run_id=run_map[message.id],
-                    session_id=session_map[message.id],
-                    thread_id=thread_map.get(message.id),
-                    features=feature_map[message.id],
+                    sender_run_id=run_map[membership_id],
+                    session_id=session_map[membership_id],
+                    thread_id=thread_map.get(membership_id),
+                    features=feature_map[membership_id],
                 )
             )
 
