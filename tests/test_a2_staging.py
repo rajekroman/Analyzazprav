@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -93,11 +94,84 @@ class A2StagingTests(unittest.TestCase):
         )
         return staging
 
-    def test_initial_migration_is_recorded(self):
+    def test_migration_chain_is_recorded(self):
         rows = self.db.conn.execute(
             "SELECT version, name FROM schema_migration ORDER BY version"
         ).fetchall()
-        self.assertEqual([(r["version"], r["name"]) for r in rows], [(1, "001_initial.sql")])
+        self.assertEqual(
+            [(r["version"], r["name"]) for r in rows],
+            [(1, "001_initial.sql"), (2, "002_a1_staging_contract.sql")],
+        )
+        version = self.db.conn.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()["value"]
+        self.assertEqual(version, "2")
+
+    def test_v1_database_upgrades_to_v2_without_data_loss(self):
+        legacy_path = Path(self.tmp.name) / "legacy.sqlite"
+        conn = sqlite3.connect(legacy_path)
+        conn.executescript((ROOT / "database" / "migrations" / "001_initial.sql").read_text(encoding="utf-8"))
+        conn.execute(
+            """INSERT INTO import_run(
+                   source_type, source_fingerprint, started_at_utc_us, status
+               ) VALUES ('fixture', 'legacy', 1, 'completed')"""
+        )
+        run_id = conn.execute("SELECT id FROM import_run").fetchone()[0]
+        conn.execute("INSERT INTO conversation(canonical_key) VALUES ('legacy-conversation')")
+        conversation_id = conn.execute("SELECT id FROM conversation").fetchone()[0]
+        conn.execute(
+            """INSERT INTO message(
+                   conversation_id, sent_at_utc_us, direction, created_import_id
+               ) VALUES (?, 123, 'incoming', ?)""",
+            (conversation_id, run_id),
+        )
+        message_id = conn.execute("SELECT id FROM message").fetchone()[0]
+        conn.execute(
+            """INSERT INTO message_source(
+                   message_id, import_run_id, source_type, source_message_id,
+                   source_hash, raw_payload_json
+               ) VALUES (?, ?, 'fixture', 'legacy-message', 'legacy-hash', '{}')""",
+            (message_id, run_id),
+        )
+        conn.commit()
+        conn.close()
+
+        upgraded = CanonicalDatabase(
+            legacy_path,
+            migrations_path=ROOT / "database" / "migrations",
+        )
+        try:
+            upgraded.initialize()
+            columns = {
+                row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message_source)")
+            }
+            self.assertIn("source_record_key", columns)
+            self.assertIn("source_contract_version", columns)
+            self.assertIsNone(
+                upgraded.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='duplicate_candidate'"
+                ).fetchone()
+            )
+            self.assertEqual(
+                upgraded.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 1
+            )
+            self.assertEqual(
+                upgraded.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 1
+            )
+            rows = upgraded.conn.execute(
+                "SELECT version FROM schema_migration ORDER BY version"
+            ).fetchall()
+            self.assertEqual([row["version"] for row in rows], [1, 2])
+            self.assertEqual(
+                upgraded.conn.execute(
+                    "SELECT value FROM schema_meta WHERE key='schema_version'"
+                ).fetchone()["value"],
+                "2",
+            )
+            self.assertEqual(upgraded.integrity_report()["integrity"], "ok")
+            self.assertEqual(upgraded.integrity_report()["foreign_key_errors"], [])
+        finally:
+            upgraded.close()
 
     def test_a1_bundle_ingest_preserves_provenance_and_relations(self):
         result = ingest_a1_staging_bundle(self.db, self._write_bundle())
