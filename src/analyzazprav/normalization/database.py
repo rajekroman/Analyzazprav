@@ -150,37 +150,54 @@ class CanonicalDatabase:
         *,
         source_type: str,
         source_fingerprint: str,
+        source_sha256: str | None = None,
         source_path: str | None = None,
         parser_version: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> ImportRunResult:
         row = self.conn.execute(
-            "SELECT id, status FROM import_run WHERE source_type=? AND source_fingerprint=?",
+            """SELECT id, status, source_sha256
+               FROM import_run
+               WHERE source_type=? AND source_fingerprint=?""",
             (source_type, source_fingerprint),
         ).fetchone()
         if row is not None:
             if row["status"] == "completed":
+                if source_sha256 is not None and row["source_sha256"] != source_sha256:
+                    with self.conn:
+                        self.conn.execute(
+                            "UPDATE import_run SET source_sha256=? WHERE id=?",
+                            (source_sha256, row["id"]),
+                        )
                 return ImportRunResult(int(row["id"]), True)
             with self.conn:
                 self.conn.execute(
                     """UPDATE import_run
-                       SET source_path=?, parser_version=?, started_at_utc_us=?,
+                       SET source_path=?, source_sha256=?, parser_version=?, started_at_utc_us=?,
                            finished_at_utc_us=NULL, status='running', metadata_json=?
                        WHERE id=?""",
-                    (source_path, parser_version, self._now_us(), self._json(metadata), row["id"]),
+                    (
+                        source_path,
+                        source_sha256,
+                        parser_version,
+                        self._now_us(),
+                        self._json(metadata),
+                        row["id"],
+                    ),
                 )
             return ImportRunResult(int(row["id"]), False)
 
         with self.conn:
             cur = self.conn.execute(
                 """INSERT INTO import_run(
-                       source_type, source_path, source_fingerprint, parser_version,
-                       started_at_utc_us, status, metadata_json
-                   ) VALUES (?, ?, ?, ?, ?, 'running', ?)""",
+                       source_type, source_path, source_fingerprint, source_sha256,
+                       parser_version, started_at_utc_us, status, metadata_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (
                     source_type,
                     source_path,
                     source_fingerprint,
+                    source_sha256,
                     parser_version,
                     self._now_us(),
                     self._json(metadata),
