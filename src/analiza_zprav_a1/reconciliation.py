@@ -244,16 +244,9 @@ def _reconcile_against_physical_source(
     message_errors = [
         record
         for record in errors
-        if record.get("scope", "message") == "message"
-        and record.get("source_message_id") is not None
+        if record.get("source_message_id") is not None
+        and record.get("scope") in (None, "message")
     ]
-    # Legacy A1 error rows predate the explicit scope field. They are still
-    # message-level outcomes when a source_message_id is present.
-    message_errors.extend(
-        record
-        for record in errors
-        if "scope" not in record and record.get("source_message_id") is not None
-    )
 
     expected_source_type = source.get("type")
     expected_source_sha = source.get("sha256")
