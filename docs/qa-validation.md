@@ -14,11 +14,12 @@ or AI output as authoritative evidence.
    deterministic partition of current A2 memberships.
 4. **ANALYTICS** — A4 basic metrics match an independent A7 arithmetic oracle;
    derived candidates retain source-message evidence.
-5. **TRACEABILITY** — A5 interpretations and A6 displays must resolve to
-   concrete canonical message IDs and, through A2 provenance, back to A1.
+5. **TRACEABILITY** — A5 assertion-bearing output and A6 displays must resolve
+   to concrete canonical message IDs and, through A2 provenance, back to A1.
 
 A gate is not considered valid merely because the module's own tests pass.
-A7 maintains independent checks and deliberately corrupt fixtures.
+A7 maintains independent checks, deliberately corrupt fixtures, pinned-module
+contract audits and explicit module verdicts.
 
 ## A1 staging gate
 
@@ -97,10 +98,12 @@ It independently checks:
   `processed_message` memberships;
 - `processing_run` input/output/canonical counts;
 - preservation of `membership_id`, `message_id` and `conversation_id`;
+- source ordering derived across all provenance occurrences;
 - deterministic per-conversation ordering and contiguous sequence numbers;
 - session boundaries re-derived from canonical timestamps and the persisted
   session-gap config;
-- consecutive-sender run partition;
+- persisted session metadata against the assigned membership partition;
+- consecutive-sender run partition and persisted sender-run metadata;
 - thread memberships never cross conversations;
 - every processed membership still resolves to an A1 `source_record_key`;
 - attachment-count/has-attachment features reconcile to A2 occurrence data.
@@ -136,6 +139,59 @@ Current pinned A4 contract SHA:
 ff18c7bd561583451f5b1c5f57f2cc0c82b5d200
 ```
 
+A7 verdict for that tested scope: **VALID**.
+
+## A5 evidence-chain gate
+
+Current pinned A5 contract SHA:
+
+```text
+b729befb2c881d3ce04d19ca735da8bd8054ab2c
+```
+
+The independent `qa.a5_live_contract` audit verifies:
+
+- duplicate A6 packet message IDs fail closed;
+- message evidence outside supplied `AnalysisContext` fails closed;
+- metric refs outside deterministic context metrics fail closed;
+- evidence snapshots are enriched from actual context with exact message ID,
+  timestamp, sender and bounded normalized excerpt;
+- deterministic metric evidence uses the actual context value;
+- observations, interpretations and patterns retain source-derived evidence;
+- `summary`, `turning_points`, `participant_p1`, `participant_p2` and
+  `shared_dynamic` are `EvidenceBackedClaim` values rather than unaddressed free
+  text;
+- invalid message or metric evidence inserted directly into `summary` is
+  rejected.
+
+A7 verdict for that tested scope: **VALID**.
+
+## A6 lossless UI/read-model gate
+
+Current pinned A6 SHA:
+
+```text
+ef9c2e4c7d89f93a82c16b30fcef7639b5fc1e31
+```
+
+A7 currently classifies that exact head as **INVALID**. The pinned
+`qa.a6_live_contract` reproduces release-blocking loss in the canonical read
+model:
+
+1. global deduplication by `message_id` removes one legitimate A2 v5 membership
+   when a physical message belongs to multiple conversations;
+2. rows with an intentionally unknown/null canonical timestamp are dropped;
+3. `membership_id` is not retained in the A6 canonical frame.
+
+These are data-loss errors, not presentation preferences. A6 may label/sort an
+unknown timestamp specially, but the canonical record must remain visible and
+traceable.
+
+The fixed A6 must also consume A5's current evidence-backed assertion shape:
+`summary` is an object with text, confidence and evidence, not a plain string.
+A6 must render the assertion text and provide the same evidence/provenance
+drill-down rather than showing a raw object or discarding its evidence.
+
 ## Result severity and module verdicts
 
 Individual validators emit:
@@ -162,19 +218,46 @@ python -m pip install -e .
 python -m unittest discover -s qa/tests -v
 ```
 
-The A7 GitHub Actions workflow runs the current A1→A2→A3 integration tests,
-golden/corrupt staging gates, and a separate pinned A4 live-contract job.
+The A7 workflow now has independent jobs for:
 
-## Next traceability gate
+- integrated A1→A2→A3 regression/negative tests;
+- pinned A4 live output versus the independent arithmetic oracle;
+- pinned A5 evidence-chain audit;
+- pinned A6 lossless-read audit.
 
-The remaining high-priority work is A5→A6 evidence-chain validation:
+A green workflow means A7 obtained the **expected explicit verdict** for every
+pinned module. It must not be interpreted as meaning every pinned module is
+VALID; an expected `INVALID` audit is intentionally green when it successfully
+reproduces a known release blocker.
 
-- duplicate or ambiguous message identity must fail closed;
-- every assertion-bearing AI result exposed to the UI must have a traceable
-  evidence contract or be explicitly marked as synthesis/non-evidentiary text;
-- every selected/context/evidence message ID must exist in the same canonical
-  conversation membership scope;
-- UI packets must preserve canonical IDs without silently rewriting or dropping
-  records;
-- the complete chain must be resolvable as
-  `UI/AI claim → canonical message → message_source → A1 source_record_key`.
+## Current cross-module verdict table
+
+```text
+A1 SOURCE / IMPORT     VALID (tested synthetic/current contract)
+A2 NORMALIZATION       VALID (tested A2 v5 contract)
+A1 → A2 reconciliation VALID (production ingest path, golden data)
+A3 PROCESSING          VALID (integrated A3 v4 contract, golden data)
+A4 ANALYTICS           VALID (pinned v6 + independent oracle)
+A5 AI EVIDENCE         VALID (pinned evidence-backed assertion contract)
+A6 UI / READ MODEL     INVALID (proven membership + unknown-time loss)
+```
+
+## Final end-to-end gate
+
+A7 will not mark the project pipeline VALID until A6 passes its lossless-read
+contract and a golden dataset completes the full chain:
+
+```text
+A1 staging
+→ A2 canonical/provenance
+→ A3 processing
+→ A4 metric/finding
+→ A6 selection/finding drill-down
+→ A5 evidence-backed result
+→ A6 result evidence drill-down
+→ A2 message_source / A1 source_record_key
+```
+
+The final gate must prove exact selected/context/evidence identities, same-chat
+scope, canonical text/timestamp/sender consistency, attachment provenance where
+published, and source provenance back to A1 without silent record loss.
