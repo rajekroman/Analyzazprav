@@ -11,7 +11,8 @@ A6 je tenká prezentační vrstva nad lokálními daty a výsledky analytického
 - Streamlit, čistě lokálně;
 - anonymizovaná vestavěná demo data pro spuštění bez A1/A2;
 - SQLite pouze pro čtení (`mode=ro`);
-- automatická detekce kompatibilní message tabulky/view;
+- přímá kompatibilita s A2 analytickými views;
+- bezpečný fallback přes automatickou detekci kompatibilní message tabulky/view;
 - filtr kontaktu, období, odesílatele a full-textového výrazu;
 - auditovatelný prohlížeč zpráv s `message_id`;
 - aktivita, poměr odesílatelů a response latency;
@@ -22,7 +23,7 @@ A6 je tenká prezentační vrstva nad lokálními daty a výsledky analytického
 
 ## Hranice odpovědnosti
 
-A6 neimportuje iMessage, nededuplikuje zdrojová data, nemění SQLite a neurčuje psychologický význam komunikace. Výpočty, které patří do A4, jsou zde pouze jako lehký MVP fallback a později se nahradí autoritativními analytickými views.
+A6 neimportuje iMessage, nededuplikuje zdrojová data, nemění SQLite a neurčuje psychologický význam komunikace. Výpočty, které patří do A4, jsou zde pouze jako lehký MVP fallback a později se nahradí autoritativními analytickými výstupy.
 
 ## Spuštění
 
@@ -35,13 +36,13 @@ Výchozí režim používá demo data. V levém panelu lze přepnout na SQLite a
 
 ## Integrační kontrakt A2
 
-A6 nevyžaduje konkrétní název view. Adapter hledá read-only tabulku/view s minimálně ekvivalenty:
+A6 preferuje autoritativní A2 views:
 
-- `message_id` / `id` / `guid`;
-- `timestamp` / `sent_at_utc` / `created_at_utc`;
-- `text` / `body` / `raw_text`.
+- `analysis_messages` — zprávy, odesílatel a `sent_at_utc_us`;
+- `analysis_conversations` — název / canonical key konverzace;
+- `analysis_attachments` — budoucí napojení příloh.
 
-Volitelně mapuje conversation/contact/sender sloupce. Jakmile A2 stabilizuje názvy analytických views, adapter lze zjednodušit bez zásahu do UI.
+`sent_at_utc_us` se převádí explicitně jako Unix epoch v mikrosekundách. Pokud A2 views nejsou přítomné, adapter použije read-only schema discovery a hledá ekvivalenty `message_id`, timestampu a textu.
 
 ## Kontrakt A5
 
