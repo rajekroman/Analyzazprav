@@ -1,12 +1,24 @@
 import hashlib
 import json
+import re
+from contextlib import contextmanager
 from pathlib import Path
-
-import pytest
 
 from analiza_zprav_a1.csv_mapping import CSVMappingProfile
 from analiza_zprav_a1.importer import import_generic_csv
 from analiza_zprav_a1.parsers.generic_structured import GenericCSVParser
+
+
+@contextmanager
+def _raises_value_error(pattern: str):
+    try:
+        yield
+    except ValueError as exc:
+        assert re.search(pattern, str(exc)), (
+            f"ValueError {exc!r} does not match expected pattern {pattern!r}"
+        )
+    else:
+        raise AssertionError(f"Expected ValueError matching {pattern!r}")
 
 
 def _write_profile(path: Path, value: dict, *, pretty: bool = False) -> None:
@@ -167,7 +179,7 @@ def test_profile_rejects_missing_header_and_invalid_headerless_index(tmp_path: P
     )
     source = tmp_path / "source.csv"
     source.write_text("actual\nhello\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="missing header"):
+    with _raises_value_error("missing header"):
         list(GenericCSVParser(source, CSVMappingProfile.load(headered)).iter_messages())
 
     invalid = tmp_path / "invalid.json"
@@ -180,17 +192,17 @@ def test_profile_rejects_missing_header_and_invalid_headerless_index(tmp_path: P
             "fields": {"text": -1},
         },
     )
-    with pytest.raises(ValueError, match="zero-based non-negative"):
+    with _raises_value_error("zero-based non-negative"):
         CSVMappingProfile.load(invalid)
 
 
 def test_default_csv_rejects_duplicate_headers_and_overwide_rows(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.csv"
     duplicate.write_text("text,text\na,b\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate header"):
+    with _raises_value_error("duplicate header"):
         list(GenericCSVParser(duplicate).iter_messages())
 
     overwide = tmp_path / "overwide.csv"
     overwide.write_text("text,sender\nhello,alice,hidden\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="more fields than the header"):
+    with _raises_value_error("more fields than the header"):
         list(GenericCSVParser(overwide).iter_messages())
