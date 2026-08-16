@@ -27,10 +27,12 @@ def main() -> int:
         result = process_messages(list(projection.messages), list(projection.relations), config)
         store = ProcessingStore(conn)
         store.initialize()
-        run_id = store.replace_all(result, config)
+        run_id = store.persist(result, config)
+        canonical_message_count = len({message.message_id for message in result.messages})
         print(
-            f"A3 PASS run={run_id} messages={len(result.messages)} "
-            f"runs={len(result.sender_runs)} sessions={len(result.sessions)} "
+            f"A3 PASS run={run_id} processed_memberships={len(result.messages)} "
+            f"canonical_messages={canonical_message_count} "
+            f"sender_runs={len(result.sender_runs)} sessions={len(result.sessions)} "
             f"threads={len(result.threads)} duplicate_candidates={len(result.duplicate_candidates)}"
         )
         return 0
