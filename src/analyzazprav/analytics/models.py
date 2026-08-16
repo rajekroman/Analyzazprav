@@ -200,6 +200,34 @@ class TrendSummary:
     source_message_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TopicEvidence:
+    conversation_id: int
+    topic_key: str
+    message_id: int
+    participant_id: int | None
+    period_date: str | None
+    date_basis: str | None
+    occurrence_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopicCandidate:
+    conversation_id: int
+    topic_key: str
+    method: str
+    normalized_phrase: str
+    ngram_size: int
+    document_frequency: int
+    document_frequency_ratio: float
+    occurrence_count: int
+    participant_count: int
+    salience: float
+    first_period_date: str | None
+    last_period_date: str | None
+    source_message_ids: tuple[int, ...]
+
+
 @dataclass(slots=True)
 class ConversationAnalytics:
     conversation_id: int
@@ -221,5 +249,7 @@ class ConversationAnalytics:
     engagement_signals: list[EngagementPeriodSignal] = field(default_factory=list)
     dyadic_regimes: list[DyadicRegime] = field(default_factory=list)
     trend_summaries: list[TrendSummary] = field(default_factory=list)
+    topic_candidates: list[TopicCandidate] = field(default_factory=list)
+    topic_evidence: list[TopicEvidence] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)

@@ -3,7 +3,7 @@
 from .adapter import analyze_database, analyze_incremental_database, load_analytic_messages
 from .config import AnalyticsConfig
 from .core import build_turns
-from .engine_v5 import analyze_conversation
+from .engine_v6 import analyze_conversation
 from .models import (
     AnalyticMessage,
     ChangePoint,
@@ -14,9 +14,12 @@ from .models import (
     PeriodParticipantMetric,
     SilenceEvent,
     TimeBucketMetric,
+    TopicCandidate,
+    TopicEvidence,
     TrendSummary,
 )
-from .store_v5 import AnalyticsStore
+from .store_v6 import AnalyticsStore
+from .topics import build_lexical_topic_candidates, tokenize_topic_text
 
 __all__ = [
     "AnalyticMessage",
@@ -30,10 +33,14 @@ __all__ = [
     "PeriodParticipantMetric",
     "SilenceEvent",
     "TimeBucketMetric",
+    "TopicCandidate",
+    "TopicEvidence",
     "TrendSummary",
     "analyze_conversation",
     "analyze_database",
     "analyze_incremental_database",
+    "build_lexical_topic_candidates",
     "build_turns",
     "load_analytic_messages",
+    "tokenize_topic_text",
 ]

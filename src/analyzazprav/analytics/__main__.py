@@ -7,7 +7,7 @@ import sqlite3
 
 from .adapter import analyze_database, analyze_incremental_database
 from .config import AnalyticsConfig
-from .store_v5 import AnalyticsStore
+from .store_v6 import AnalyticsStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
                     "change_point_count": sum(len(item.change_points) for item in results),
                     "regime_count": sum(len(item.dyadic_regimes) for item in results),
                     "trend_count": sum(len(item.trend_summaries) for item in results),
+                    "topic_candidate_count": sum(
+                        len(item.topic_candidates) for item in results
+                    ),
+                    "topic_evidence_count": sum(
+                        len(item.topic_evidence) for item in results
+                    ),
                 },
                 sort_keys=True,
             )

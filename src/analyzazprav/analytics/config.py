@@ -26,6 +26,13 @@ class AnalyticsConfig:
     trend_min_periods: int = 4
     trend_normalized_slope_threshold: float = 0.05
 
+    topic_min_document_frequency: int = 3
+    topic_max_document_frequency_ratio: float = 1.0
+    topic_min_token_length: int = 2
+    topic_min_ngram_size: int = 1
+    topic_max_ngram_size: int = 3
+    topic_max_candidates: int = 50
+
     affection_markers: tuple[str, ...] = field(
         default=("❤️", "❤", "💕", "😘", "🥰", "miluju", "miláčku", "zlatíčko", "love you")
     )
@@ -100,6 +107,20 @@ class AnalyticsConfig:
             raise ValueError("monthly trend window must be >= trend_min_periods")
         if self.trend_normalized_slope_threshold <= 0:
             raise ValueError("trend_normalized_slope_threshold must be positive")
+        if self.topic_min_document_frequency < 2:
+            raise ValueError("topic_min_document_frequency must be >= 2")
+        if not 0 < self.topic_max_document_frequency_ratio <= 1:
+            raise ValueError("topic_max_document_frequency_ratio must be in (0, 1]")
+        if self.topic_min_token_length < 1:
+            raise ValueError("topic_min_token_length must be >= 1")
+        if self.topic_min_ngram_size < 1:
+            raise ValueError("topic_min_ngram_size must be >= 1")
+        if self.topic_max_ngram_size < self.topic_min_ngram_size:
+            raise ValueError("topic_max_ngram_size must be >= topic_min_ngram_size")
+        if self.topic_max_ngram_size > 5:
+            raise ValueError("topic_max_ngram_size must be <= 5")
+        if self.topic_max_candidates < 1:
+            raise ValueError("topic_max_candidates must be >= 1")
         engagement_total = (
             self.engagement_activity_weight
             + self.engagement_initiation_weight
