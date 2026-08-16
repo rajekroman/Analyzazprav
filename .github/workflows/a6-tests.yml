@@ -8,7 +8,7 @@ on:
     paths:
       - 'app.py'
       - 'a6/**'
-      - 'tests/test_a6_data.py'
+      - 'tests/test_a6*.py'
       - 'requirements.txt'
       - '.github/workflows/a6-tests.yml'
 
@@ -23,7 +23,7 @@ jobs:
       - name: Install A6 dependencies
         run: python -m pip install -r requirements.txt
       - name: Run A6 tests
-        run: pytest -q tests/test_a6_data.py
+        run: pytest -q tests/test_a6*.py
       - name: Streamlit startup smoke test
         shell: bash
         run: |
