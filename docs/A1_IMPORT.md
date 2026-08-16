@@ -8,13 +8,15 @@ Aktuální funkční slice podporuje:
 - iMazing Messages CSV s hlavičkou;
 - obecné message CSV s hlavičkou;
 - JSON a JSONL message exporty;
-- resolver skutečných souborů příloh + SHA-256.
+- resolver skutečných souborů příloh + SHA-256;
+- source participant membership a metadata Apple konverzací.
 
 ## Vlastnosti
 
 - `chat.db` se otevírá přes SQLite `mode=ro` + `PRAGMA query_only=ON`;
 - zprávy se exportují do `messages.jsonl` + `manifest.json`;
 - zachovává se source message ID, GUID, chat vazba, sender handle, timestamp, `service`, reply GUID a metadata příloh;
+- pro Apple chaty se z `chat_handle_join` zachovají source participant handles a raw metadata řádku `chat`; hodnoty se cachují po `chat_id`, aby dlouhé konverzace nevytvářely opakované SQL dotazy;
 - zachovává se `raw_text` i JSON-safe `raw_payload`; BLOB hodnoty jsou reprezentované Base64;
 - `text` má prioritu, `attributedBody` má best-effort fallback bez externích knihoven;
 - každý record obsahuje SHA-256 zdroje a stabilní `source_record_key` pro idempotentní zpracování v A2;
@@ -98,8 +100,7 @@ Nested attachment objekt může obsahovat `path`/`filename`/`file`/`name`, MIME 
 ## Další A1 slice
 
 1. TXT import s explicitním profilem/bez hádání message boundaries;
-2. participant/group-chat membership;
-3. reactions/Tapbacks a edit history;
-4. robustnější `attributedBody` decoder;
-5. explicitní mapping profil pro nestandardní/headerless CSV;
-6. validační report A1 → A7.
+2. reactions/Tapbacks a edit history;
+3. robustnější `attributedBody` decoder;
+4. explicitní mapping profil pro nestandardní/headerless CSV;
+5. validační report A1 → A7.
