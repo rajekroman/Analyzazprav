@@ -100,14 +100,18 @@ class A2StagingTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(
             [(r["version"], r["name"]) for r in rows],
-            [(1, "001_initial.sql"), (2, "002_a1_staging_contract.sql")],
+            [
+                (1, "001_initial.sql"),
+                (2, "002_a1_staging_contract.sql"),
+                (3, "003_source_content_hash.sql"),
+            ],
         )
         version = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()["value"]
-        self.assertEqual(version, "2")
+        self.assertEqual(version, "3")
 
-    def test_v1_database_upgrades_to_v2_without_data_loss(self):
+    def test_v1_database_upgrades_to_v3_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite"
         conn = sqlite3.connect(legacy_path)
         conn.executescript((ROOT / "database" / "migrations" / "001_initial.sql").read_text(encoding="utf-8"))
@@ -142,11 +146,15 @@ class A2StagingTests(unittest.TestCase):
         )
         try:
             upgraded.initialize()
-            columns = {
+            message_source_columns = {
                 row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message_source)")
             }
-            self.assertIn("source_record_key", columns)
-            self.assertIn("source_contract_version", columns)
+            import_columns = {
+                row["name"] for row in upgraded.conn.execute("PRAGMA table_info(import_run)")
+            }
+            self.assertIn("source_record_key", message_source_columns)
+            self.assertIn("source_contract_version", message_source_columns)
+            self.assertIn("source_sha256", import_columns)
             self.assertIsNone(
                 upgraded.conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='duplicate_candidate'"
@@ -161,15 +169,16 @@ class A2StagingTests(unittest.TestCase):
             rows = upgraded.conn.execute(
                 "SELECT version FROM schema_migration ORDER BY version"
             ).fetchall()
-            self.assertEqual([row["version"] for row in rows], [1, 2])
+            self.assertEqual([row["version"] for row in rows], [1, 2, 3])
             self.assertEqual(
                 upgraded.conn.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()["value"],
-                "2",
+                "3",
             )
-            self.assertEqual(upgraded.integrity_report()["integrity"], "ok")
-            self.assertEqual(upgraded.integrity_report()["foreign_key_errors"], [])
+            report = upgraded.integrity_report()
+            self.assertEqual(report["integrity"], "ok")
+            self.assertEqual(report["foreign_key_errors"], [])
         finally:
             upgraded.close()
 
@@ -193,6 +202,13 @@ class A2StagingTests(unittest.TestCase):
         self.assertEqual(source["source_record_key"], "1" * 64)
         self.assertEqual(source["source_contract_version"], "1")
         self.assertEqual(json.loads(source["metadata_json"])["a1_source_timestamp_precision"], "nanosecond")
+        import_run = self.db.conn.execute(
+            "SELECT source_fingerprint, source_sha256, parser_version FROM import_run WHERE id=?",
+            (result.import_run_id,),
+        ).fetchone()
+        self.assertEqual(import_run["source_sha256"], "a" * 64)
+        self.assertNotEqual(import_run["source_fingerprint"], import_run["source_sha256"])
+        self.assertEqual(import_run["parser_version"], "0.2.0")
         repeated = ingest_a1_staging_bundle(self.db, Path(self.tmp.name) / "staging")
         self.assertTrue(repeated.already_imported)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 2)
@@ -205,6 +221,13 @@ class A2StagingTests(unittest.TestCase):
         self.assertNotEqual(first.import_run_id, second.import_run_id)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 2)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 4)
+        imports = self.db.conn.execute(
+            """SELECT source_sha256, source_fingerprint, parser_version
+               FROM import_run ORDER BY id"""
+        ).fetchall()
+        self.assertEqual([row["source_sha256"] for row in imports], ["a" * 64, "a" * 64])
+        self.assertNotEqual(imports[0]["source_fingerprint"], imports[1]["source_fingerprint"])
+        self.assertEqual([row["parser_version"] for row in imports], ["0.2.0", "0.3.0"])
 
     def test_manifest_with_extraction_errors_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "extraction errors"):
