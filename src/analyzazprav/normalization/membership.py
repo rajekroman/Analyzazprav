@@ -25,6 +25,50 @@ def import_source_snapshot(
     return f"fingerprint:{fingerprint}", None
 
 
+def _source_conversation_participant_ids(
+    db: CanonicalDatabase,
+    metadata: Mapping[str, Any] | None,
+) -> list[int]:
+    """Canonicalize exact source participant handles carried by one chat relation.
+
+    A1 Apple records expose ``participant_handles`` from ``chat_handle_join`` on
+    each source conversation relation.  These are strong source identities, not
+    display names, so A2 may safely normalize them using the same identity rules
+    as message senders.  The original handle list remains untouched in source
+    metadata/provenance.
+    """
+
+    if not metadata or "participant_handles" not in metadata:
+        return []
+    raw_handles = metadata.get("participant_handles")
+    if raw_handles is None:
+        return []
+    if not isinstance(raw_handles, list):
+        raise ValueError("source conversation participant_handles must be an array")
+
+    result: list[int] = []
+    for raw_handle in raw_handles:
+        if raw_handle is None:
+            continue
+        if not isinstance(raw_handle, str):
+            raise ValueError("source conversation participant handle must be a string")
+        handle = raw_handle.strip()
+        if not handle:
+            continue
+        if "@" in handle:
+            identity_type = "email"
+        else:
+            compact = "".join(ch for ch in handle if ch not in " +()-.")
+            identity_type = "phone" if compact.isdigit() and compact else "imessage_handle"
+        participant_id = db.get_or_create_participant(
+            identity_type=identity_type,
+            identity_value=handle,
+        )
+        if participant_id not in result:
+            result.append(participant_id)
+    return result
+
+
 def get_or_create_source_conversation(
     db: CanonicalDatabase,
     *,
@@ -112,13 +156,22 @@ def get_or_create_source_conversation(
             )
             conversation_source_pk = int(cur.lastrowid)
 
-    if participant_ids:
+    all_participant_ids: list[int] = []
+    for participant_id in participant_ids:
+        value = int(participant_id)
+        if value not in all_participant_ids:
+            all_participant_ids.append(value)
+    for participant_id in _source_conversation_participant_ids(db, metadata):
+        if participant_id not in all_participant_ids:
+            all_participant_ids.append(participant_id)
+
+    if all_participant_ids:
         with db.conn:
             db.conn.executemany(
                 """INSERT OR IGNORE INTO conversation_participant(
                        conversation_id, participant_id
                    ) VALUES (?, ?)""",
-                [(conversation_id, int(pid)) for pid in participant_ids],
+                [(conversation_id, participant_id) for participant_id in all_participant_ids],
             )
 
     return conversation_id, conversation_source_pk

@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6');
 
 CREATE TABLE IF NOT EXISTS schema_migration (
     version INTEGER PRIMARY KEY,
@@ -318,3 +318,23 @@ SELECT mc.id AS membership_id,
 FROM message_conversation mc
 LEFT JOIN message_source_conversation msc ON msc.membership_id = mc.id
 LEFT JOIN conversation_source cs ON cs.id = msc.conversation_source_id;
+
+CREATE VIEW IF NOT EXISTS analysis_attachment_sources AS
+SELECT ats.id AS attachment_source_id,
+       ats.attachment_id,
+       ats.message_attachment_occurrence_id AS occurrence_id,
+       mao.message_id,
+       mao.position,
+       ats.import_run_id,
+       ir.source_type,
+       COALESCE(ir.source_sha256, 'fingerprint:' || ir.source_fingerprint) AS source_snapshot_key,
+       ir.source_sha256,
+       ir.parser_version,
+       ats.source_attachment_id,
+       ats.source_occurrence_key,
+       ats.original_filename,
+       ats.original_path
+FROM attachment_source ats
+JOIN import_run ir ON ir.id = ats.import_run_id
+LEFT JOIN message_attachment_occurrence mao
+  ON mao.id = ats.message_attachment_occurrence_id;
