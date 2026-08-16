@@ -6,13 +6,13 @@ A7 je nezávislá auditní vrstva projektu Analýza zpráv. Jejím úkolem není
 
 ```text
 source
-→ A1 staging
+→ A1 staging + reconciliation.json
 → A2 canonical SQLite v5
 → A3 derived processing v4
 → A7 reconciliation report
 ```
 
-A7 neudržuje paralelní message model. Čte existující staging kontrakt a existující A2/A3 tabulky read-only.
+A7 neudržuje paralelní message model. Čte existující staging kontrakt, A1 source reconciliation a existující A2/A3 tabulky read-only.
 
 ## CLI
 
@@ -20,7 +20,7 @@ A7 neudržuje paralelní message model. Čte existující staging kontrakt a exi
 az-qa staging --staging ./staging/imessage
 ```
 
-ověří samotný aktuální A1 bundle.
+ověří aktuální A1 bundle **včetně povinného `reconciliation.json`**.
 
 ```bash
 az-qa vertical \
@@ -28,13 +28,13 @@ az-qa vertical \
   --database ./messages.sqlite
 ```
 
-provede A1→A2→A3 reconciliation.
+provede A1→A2→A3 reconciliation. Vertical gate nejprve vyžaduje PASS staging/reconciliation gate; teprve potom čte databázi.
 
 Návratový kód je nenulový při `FAIL`. Report je JSON a obsahuje `PASS`, `WARNING` nebo `FAIL`, konkrétní issue codes, counts, fingerprints a IDs aktuálních A2/A3 runs.
 
 ## A1 staging gate
 
-Validator kontroluje přesný současný A1 kontrakt:
+Nízkoúrovňový strukturální validator kontroluje přesný současný A1 kontrakt:
 
 - `contract_version = 1`;
 - source type + source snapshot SHA-256;
@@ -51,6 +51,25 @@ Validator kontroluje přesný současný A1 kontrakt:
 - attachment occurrence count a hash format.
 
 A1 `errors != 0`, count mismatch, duplicate/malformed record key nebo nevalidní iMessage snapshot provenance jsou `FAIL`.
+
+## Povinný A1 source reconciliation gate
+
+`az-qa staging` nad strukturálním validátorem vyžaduje `manifest.outputs.reconciliation` (standardně `reconciliation.json`). Report musí být výstup A1 reconciliation nad stejným immutable source snapshotem, který byl hashován a parsován.
+
+A7 kontroluje minimálně:
+
+- `reconciliation_version = 1`;
+- `status = ok` a `ok = true`;
+- prázdné `failed_checks` a `parse_failures`;
+- všechny interní `checks` musí být `true`;
+- reconciliation source type/SHA i `actual_sha256` musí souhlasit s A1 manifestem;
+- `messages_jsonl_records` a `errors_jsonl_records` musí odpovídat fyzickým JSONL souborům;
+- počty `unsupported_records` a `duplicate_records` musí odpovídat manifest counts;
+- `manifest.counts.reconciliation_errors` musí být 0.
+
+`unsupported` a `duplicate` nejsou samy o sobě chyba: jsou platný explicitní osud source záznamu. Chybějící, nevalidní nebo failed reconciliation report je vždy `FAIL`.
+
+A7 ukládá také SHA-256 fingerprint `reconciliation.json`, aby šel konkrétní QA výsledek svázat s konkrétním source reconciliation důkazem.
 
 ## A1 → A2 reconciliation
 
@@ -143,7 +162,8 @@ Release-blocking A7 test nevytváří paralelní ručně psané staging schema. 
 ```text
 synthetic Apple chat.db
 → current import_imessage()
-→ current A1 staging validator
+→ current A1 source reconciliation
+→ current A7 staging bundle gate
 → current ingest_a1_staging_bundle()
 → current A2 v5
 → current load_a2_projection()
@@ -162,19 +182,23 @@ Fixture obsahuje:
 - 3 canonical memberships;
 - 3 source conversation relations.
 
-Expected QA result je `PASS` a A2 fingerprint před/po A3 musí být identický.
+Expected QA result je `PASS`, A1 reconciliation je `ok` a A2 fingerprint před/po A3 musí být identický.
 
 ## Negativní fixtures
 
-A7 zároveň úmyslně porušuje data a očekává `FAIL`:
+A7 úmyslně porušuje data a očekává `FAIL` minimálně v těchto případech:
 
 1. staging `source_record_key` je změněný oproti deklarovanému algorithm/version;
-2. jedna A3 `processed_message` membership je odstraněna.
+2. `reconciliation.json` chybí;
+3. `reconciliation.json` deklaruje failed check;
+4. jedna A3 `processed_message` membership je odstraněna.
 
-Druhý případ musí aktivovat minimálně:
+Poslední případ musí aktivovat minimálně:
 
 - `A3_OUTPUT_ACCOUNTING_MISMATCH`;
 - `A2_A3_MEMBERSHIP_SET_MISMATCH`.
+
+Vertical gate s chybějícím/failed A1 reconciliation reportem nesmí pokračovat jako PASS do databázové vrstvy.
 
 ## Stavové kódy
 
