@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import CanonicalDatabase
-from .staging import ingest_a1_staging_bundle
+from .time_contract import ingest_a1_staging_bundle
 
 
 def _schema_version(db: CanonicalDatabase) -> str | None:
@@ -58,6 +58,7 @@ def _cmd_ingest_a1(database: Path, staging: Path) -> int:
                 "messages": result.messages,
                 "attachments": result.attachments,
                 "relations": result.relations,
+                "conversation_relations": result.conversation_relations,
                 "integrity": report,
             }
         )
