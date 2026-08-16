@@ -16,6 +16,7 @@ from analyzazprav.qa import (
     STATUS_FAIL,
     STATUS_PASS,
     canonical_fingerprint,
+    validate_staging_bundle,
     validate_staging_dir,
     validate_vertical_pipeline,
 )
@@ -87,11 +88,15 @@ def _build_vertical(tmp_path: Path) -> tuple[Path, Path, str, str]:
     assert a1.messages_emitted == 2
     assert a1.attachments_seen == 1
     assert a1.errors == 0
+    assert a1.reconciliation_ok is True
 
-    staging_report = validate_staging_dir(staging)
+    staging_report = validate_staging_bundle(staging)
     assert staging_report["status"] == STATUS_PASS, staging_report
     assert staging_report["counts"]["records"] == 2
     assert staging_report["counts"]["conversation_relations"] == 3
+    assert staging_report["reconciliation"] == {"version": "1", "status": "ok", "ok": True}
+    assert staging_report["checks"]["reconciliation_message_rows_match_file"] is True
+    assert staging_report["checks"]["reconciliation_error_rows_match_file"] is True
 
     db = CanonicalDatabase(database)
     try:
@@ -126,6 +131,8 @@ def test_actual_a1_a2_a3_vertical_pipeline_passes_and_preserves_a2(tmp_path: Pat
     assert checks["a1_record_count"] == 2
     assert checks["a1_attachment_count"] == 1
     assert checks["a1_conversation_relation_count"] == 3
+    assert checks["a1_reconciliation_status"] == "ok"
+    assert isinstance(checks["a1_reconciliation_fingerprint"], str)
     assert checks["a2_message_source_count"] == 2
     assert checks["a2_source_conversation_relation_count"] == 3
     assert checks["a2_total_membership_count"] == 3
@@ -160,6 +167,52 @@ def test_staging_validator_rejects_corrupted_imessage_source_record_key(tmp_path
     assert report["status"] == STATUS_FAIL
     codes = {issue["code"] for issue in report["issues"]}
     assert "SOURCE_RECORD_KEY_MISMATCH" in codes
+
+    bundle_report = validate_staging_bundle(staging)
+    assert bundle_report["status"] == STATUS_FAIL
+
+
+def test_bundle_gate_rejects_missing_reconciliation_artifact(tmp_path: Path) -> None:
+    source = tmp_path / "chat.db"
+    staging = tmp_path / "staging"
+    _make_chat_db(source)
+    import_imessage(source, staging)
+    (staging / "reconciliation.json").unlink()
+
+    report = validate_staging_bundle(staging)
+    assert report["status"] == STATUS_FAIL
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "RECONCILIATION_MISSING" in codes
+
+
+def test_bundle_gate_rejects_failed_reconciliation_report(tmp_path: Path) -> None:
+    source = tmp_path / "chat.db"
+    staging = tmp_path / "staging"
+    _make_chat_db(source)
+    import_imessage(source, staging)
+
+    path = staging / "reconciliation.json"
+    report_payload = json.loads(path.read_text(encoding="utf-8"))
+    report_payload["status"] = "failed"
+    report_payload["ok"] = False
+    report_payload["failed_checks"] = ["tampered_fixture"]
+    path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    report = validate_staging_bundle(staging)
+    assert report["status"] == STATUS_FAIL
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "RECONCILIATION_FAILED" in codes
+    assert "RECONCILIATION_FAILED_CHECKS" in codes
+
+
+def test_vertical_validator_rejects_missing_reconciliation_before_database_checks(tmp_path: Path) -> None:
+    staging, database, _, _ = _build_vertical(tmp_path)
+    (staging / "reconciliation.json").unlink()
+
+    report = validate_vertical_pipeline(staging, database)
+    assert report["status"] == STATUS_FAIL
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "A1_STAGING_GATE_FAILED" in codes
 
 
 def test_vertical_validator_detects_dropped_a3_membership(tmp_path: Path) -> None:
