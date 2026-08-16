@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,14 +83,34 @@ class CSVMappingProfile:
             fields=fields,
         )
 
-    def manifest_metadata(self, *, profile_name: str, sha256: str) -> dict[str, Any]:
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "delimiter": self.delimiter,
+            "has_header": self.has_header,
+            "fields": dict(self.fields),
+        }
+
+    def semantic_sha256(self) -> str:
+        encoded = json.dumps(
+            self.canonical_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def manifest_metadata(
+        self,
+        *,
+        profile_name: str,
+        file_sha256: str,
+    ) -> dict[str, Any]:
         return {
             "mapping_profile": {
-                "version": self.version,
+                **self.canonical_payload(),
                 "name": profile_name,
-                "sha256": sha256,
-                "has_header": self.has_header,
-                "delimiter": self.delimiter,
-                "fields": dict(self.fields),
+                "file_sha256": file_sha256,
+                "semantic_sha256": self.semantic_sha256(),
             }
         }
