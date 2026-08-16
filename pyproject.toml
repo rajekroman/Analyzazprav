@@ -9,6 +9,7 @@ dependencies = []
 az-import = "analiza_zprav_a1.cli:main"
 az-normalize = "analyzazprav.normalization.cli:main"
 az-process = "analyzazprav.processing.__main__:main"
+az-analyze = "analyzazprav.analytics.__main__:main"
 az-qa = "analyzazprav.qa.cli:main"
 
 [build-system]
