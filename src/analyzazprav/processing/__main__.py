@@ -24,14 +24,23 @@ def main() -> int:
             session_gap_seconds=max(1, int(args.session_gap_hours * 3600)),
             duplicate_tolerance_seconds=args.duplicate_tolerance_seconds,
         )
-        result = process_messages(list(projection.messages), list(projection.relations), config)
+        result = process_messages(
+            list(projection.messages),
+            list(projection.relations),
+            config,
+            participants=list(projection.participants),
+        )
         store = ProcessingStore(conn)
         store.initialize()
         run_id = store.replace_all(result, config)
+        canonical_messages = len({message.message_id for message in result.messages})
         print(
-            f"A3 PASS run={run_id} messages={len(result.messages)} "
-            f"runs={len(result.sender_runs)} sessions={len(result.sessions)} "
-            f"threads={len(result.threads)} duplicate_candidates={len(result.duplicate_candidates)}"
+            f"A3 PASS run={run_id} canonical_messages={canonical_messages} "
+            f"memberships={len(result.messages)} participants={len(result.resolved_participants)} "
+            f"aliases={len(result.participant_aliases)} runs={len(result.sender_runs)} "
+            f"sessions={len(result.sessions)} threads={len(result.threads)} "
+            f"duplicate_candidates={len(result.duplicate_candidates)} "
+            f"participant_candidates={len(result.participant_resolution_candidates)}"
         )
         return 0
     finally:
