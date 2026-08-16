@@ -1,6 +1,20 @@
 {
-  "schema_version": 1,
-  "source_type": "imessage_chat_db_fixture",
-  "message_count": 2,
-  "fixture": "Intentionally invalid A7 staging dataset"
+  "contract_version": "1",
+  "counts": {
+    "attachments_seen": 0,
+    "errors": 0,
+    "messages_seen": 2
+  },
+  "outputs": {
+    "messages": "messages.jsonl"
+  },
+  "parser": {
+    "name": "imessage-chatdb",
+    "version": "0.2.0"
+  },
+  "source": {
+    "name": "chat.db",
+    "sha256": "a165dfc42b50f2e9c87e886dd02c17180125972048bd2538cd74b3c953084d07",
+    "type": "imessage_chat_db"
+  }
 }

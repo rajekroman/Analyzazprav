@@ -13,39 +13,55 @@ records, silently drops duplicates, or treats AI output as authoritative data.
 5. **TRACEABILITY** — A5 interpretations and A6 displays resolve to concrete
    canonical message IDs and, through provenance, back to source records.
 
-The first implemented slice covers the IMPORT gate for an A1 staging directory
-containing `manifest.json` and `messages.jsonl`.
+## A1 staging gate
 
-## Run locally
+A1 currently emits `manifest.json` and `messages.jsonl`. The authoritative
+contract observed on `agent/a1-imessage-import` uses:
+
+- `contract_version`
+- `source.type`, `source.sha256`
+- `counts.messages_seen`, `counts.attachments_seen`, `counts.errors`
+- per-message `source_record_key`, `source_message_id`,
+  `conversation_source_id`, `source_sha256`
+- `timestamp_raw`, `timestamp_utc`, `timestamp_precision`
+- attachment source metadata
+
+Run:
 
 ```bash
 python -m qa.staging_validator path/to/staging
-python -m qa.staging_validator path/to/staging --report qa-report.json
-python -m unittest discover -s qa/tests -v
+python -m qa.staging_validator path/to/staging --report a7-staging-report.json
 ```
 
-The validator uses only the Python standard library and does not modify the
-staging directory.
+A7 independently re-checks Apple-epoch timestamp conversion, reconciles manifest
+message/attachment counts, rejects export errors, checks source SHA-256
+provenance, recomputes A1 `stable_message_key`, detects duplicate record keys,
+and reports local attachment problems without deleting data.
 
-## Required A1 staging invariants
+The current A1 first slice stores `source_path` as metadata; A7 does not assume
+that this original absolute path has been copied into the staging directory.
+Future copied files can use `relative_path`/`copied_path`, which A7 verifies.
 
-Each parsed JSONL record must be a JSON object and must contain a non-empty,
-unique `source_record_key`. Duplicate keys are reported as errors; records are
-not deleted.
+## A2 SQLite gate
 
-A timestamp should be exposed in an unambiguous UTC/offset-aware form such as
-`timestamp_utc`, or inside a timestamp object as `iso_utc`. Explicit Unix-unit
-fields (`unix_s`, `unix_ms`, `unix_us`, `unix_ns`) are also supported.
-Ambiguous local timestamps must not be silently assumed to be UTC.
+Run:
 
-`attachments` is optional but, when present, must be a list. If an attachment
-claims a copied/relative local path and that file is missing, A7 reports it.
-Files inside a staging `attachments/` directory that are not referenced by any
-message are reported as orphans.
+```bash
+python -m qa.sqlite_validator path/to/messages.sqlite
+python -m qa.sqlite_validator path/to/messages.sqlite --report a7-sqlite-report.json
+```
 
-The manifest may declare the expected message count using `message_count`,
-`messages_count`, `record_count`, `counts.messages`, or `counts.records`.
-A mismatch is a hard failure.
+The validator opens SQLite read-only and checks:
+
+- `PRAGMA integrity_check`
+- `PRAGMA foreign_key_check`
+- required A2 canonical tables and analytical views
+- every canonical message has `message_source` provenance
+- every canonical attachment has `attachment_source` provenance
+- source hashes are present
+- completed imports have finish timestamps
+- analytical view counts reconcile to canonical tables/mappings
+- non-empty WAL presence is surfaced for reproducibility
 
 ## Result severity
 
@@ -53,27 +69,34 @@ A mismatch is a hard failure.
 - `WARNING`: no errors, but one or more conditions require review.
 - `FAIL`: at least one integrity error.
 
-Every issue carries a stable code and, where available, the exact
+Every staging issue carries a stable code and, where available, the exact
 `source_record_key` and JSONL line number.
 
 ## Fingerprints
 
-The report emits both source-file hashes and logical-record fingerprints:
+Staging reports emit exact-source and logical fingerprints:
 
-- `messages_jsonl_sha256`: exact source bytes.
-- `logical_sequence_sha256`: canonical JSON records in source sequence.
-- `logical_record_set_sha256`: canonical JSON records sorted as a logical set.
+- `messages_jsonl_sha256`
+- `manifest_sha256`
+- `logical_sequence_sha256`
+- `logical_record_set_sha256`
 
-This distinguishes byte-level changes, ordering changes, and logical content
-changes.
+SQLite reports emit `database_sha256` and, when present, `wal_sha256`.
 
 ## Golden dataset policy
 
-`qa/fixtures/golden` is a tiny synthetic source-of-truth dataset that must pass.
-`qa/fixtures/corrupt` is intentionally invalid and must fail. Future A2/A4/A5/A6
-integration fixtures must be additive and keep source identifiers explicit.
+`qa/fixtures/golden` mirrors the current A1 staging shape and must pass.
+`qa/fixtures/corrupt` is intentionally invalid and must fail. A2 is tested with
+a minimal SQLite fixture matching the required canonical object names and
+provenance relationships.
 
-## Integration requirements for downstream agents
+Run all A7 regression tests with:
+
+```bash
+python -m unittest discover -s qa/tests -v
+```
+
+## Downstream traceability requirements
 
 A2 must preserve a source mapping that lets each canonical message resolve to
 one or more A1 source records. A3/A4 must never replace canonical IDs with
@@ -81,6 +104,5 @@ derived-only identifiers. A5 must receive evidence message IDs with any
 interpretation. A6 must keep those IDs available when displaying metrics,
 selected messages, and AI analysis.
 
-A7 will later add reconciliation tests for SQLite foreign keys, integrity,
-canonical/source counts, attachment mappings, metric calculations, and AI/UI
-evidence chains.
+Future A7 slices will add end-to-end A1→A2 reconciliation, exact analytical
+metric checks, and AI/UI evidence-chain tests against integrated branches.
