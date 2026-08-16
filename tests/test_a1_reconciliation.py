@@ -1,8 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
-
-import pytest
+from unittest.mock import patch
 
 import analiza_zprav_a1.importer as importer_module
 from analiza_zprav_a1.importer import import_imessage
@@ -139,10 +138,7 @@ def test_reconciliation_detects_tampered_staging(tmp_path: Path) -> None:
     assert "source_message_rows_accounted" in report["failed_checks"]
 
 
-def test_reconciliation_failure_marks_bundle_invalid_for_a2(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_reconciliation_failure_marks_bundle_invalid_for_a2(tmp_path: Path) -> None:
     source = tmp_path / "chat.db"
     staging = tmp_path / "staging"
     canonical = tmp_path / "canonical.sqlite"
@@ -157,8 +153,8 @@ def test_reconciliation_failure_marks_bundle_invalid_for_a2(
             "duplicate_records": [],
         }
 
-    monkeypatch.setattr(importer_module, "reconcile_bundle", forced_failure)
-    stats = importer_module.import_imessage(source, staging)
+    with patch.object(importer_module, "reconcile_bundle", new=forced_failure):
+        stats = importer_module.import_imessage(source, staging)
 
     assert stats.errors == 1
     assert stats.reconciliation_ok is False
@@ -185,10 +181,11 @@ def test_reconciliation_failure_marks_bundle_invalid_for_a2(
     db = CanonicalDatabase(canonical)
     try:
         db.initialize()
-        with pytest.raises(
-            ValueError,
-            match="A1 staging manifest reports extraction errors",
-        ):
+        try:
             ingest_a1_staging_bundle(db, staging)
+        except ValueError as exc:
+            assert "A1 staging manifest reports extraction errors" in str(exc)
+        else:
+            raise AssertionError("A2 accepted an A1 bundle with reconciliation errors")
     finally:
         db.close()
