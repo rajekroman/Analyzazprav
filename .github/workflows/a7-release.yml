@@ -5,7 +5,10 @@ on:
     paths:
       - '.github/workflows/a7-release.yml'
       - 'tools/a7_release/**'
+      - 'tools/real_archive_gate.py'
       - 'tests/test_a7_release_verdict.py'
+      - 'tests/test_real_archive_gate.py'
+      - 'docs/A0_REAL_ARCHIVE_GATE.md'
       - 'src/analyzazprav/qa/**'
       - 'src/analyzazprav/a5_ai/**'
       - 'a6/**'
@@ -19,7 +22,10 @@ on:
     paths:
       - '.github/workflows/a7-release.yml'
       - 'tools/a7_release/**'
+      - 'tools/real_archive_gate.py'
       - 'tests/test_a7_release_verdict.py'
+      - 'tests/test_real_archive_gate.py'
+      - 'docs/A0_REAL_ARCHIVE_GATE.md'
       - 'src/analyzazprav/qa/**'
       - 'src/analyzazprav/a5_ai/**'
       - 'a6/**'
@@ -40,7 +46,7 @@ jobs:
       - name: Run complete repository suite
         run: pytest -q
       - name: Compile Python sources
-        run: python -m compileall -q src a6 app.py tools/a7_release
+        run: python -m compileall -q src a6 app.py tools/a7_release tools/real_archive_gate.py
       - name: Write core report
         run: >-
           python -c "import json,os,pathlib; pathlib.Path('a7-core-report.json').write_text(json.dumps({'schema_version':1,'module':'core','status':'PASS','verdict':'VALID','contract_sha':os.environ['GITHUB_SHA'],'checks':{'full_repository_pytest':True,'compileall':True},'issues':[]}, indent=2)+'\\n')"
