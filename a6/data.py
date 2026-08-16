@@ -41,18 +41,18 @@ class DataSourceError(RuntimeError):
 def _demo_rows() -> list[dict[str, object]]:
     base = pd.Timestamp("2026-08-01 08:00:00", tz="UTC")
     messages = [
-        ("Roman", "Dobré ráno, jak se dnes máš?", 0),
-        ("Ilona", "Dobré, jen mám hodně práce.", 420),
-        ("Roman", "Rozumím. Ozvi se, až budeš mít chvíli.", 630),
-        ("Ilona", "Díky, večer zavolám.", 3600),
-        ("Roman", "Platí.", 3660),
-        ("Ilona", "Nakonec dorazím později.", 86400 + 1500),
-        ("Roman", "Dobře, dej vědět až vyrazíš.", 86400 + 2100),
-        ("Ilona", "Jedu.", 86400 + 7200),
-        ("Roman", "OK.", 86400 + 7260),
-        ("Ilona", "Můžeme probrat včerejšek?", 2 * 86400 + 1200),
-        ("Roman", "Ano. Chci tomu rozumět, ne se hádat.", 2 * 86400 + 1500),
-        ("Ilona", "To bych chtěla taky.", 2 * 86400 + 1740),
+        ("Osoba A", "Dobré ráno, jak se dnes máš?", 0),
+        ("Osoba B", "Dobré, jen mám hodně práce.", 420),
+        ("Osoba A", "Rozumím. Ozvi se, až budeš mít chvíli.", 630),
+        ("Osoba B", "Díky, večer zavolám.", 3600),
+        ("Osoba A", "Platí.", 3660),
+        ("Osoba B", "Nakonec dorazím později.", 86400 + 1500),
+        ("Osoba A", "Dobře, dej vědět až vyrazíš.", 86400 + 2100),
+        ("Osoba B", "Jedu.", 86400 + 7200),
+        ("Osoba A", "OK.", 86400 + 7260),
+        ("Osoba B", "Můžeme probrat včerejšek?", 2 * 86400 + 1200),
+        ("Osoba A", "Ano. Chci tomu rozumět, ne se hádat.", 2 * 86400 + 1500),
+        ("Osoba B", "To bych chtěla taky.", 2 * 86400 + 1740),
     ]
     rows: list[dict[str, object]] = []
     for idx, (sender, text, offset) in enumerate(messages, start=1):
@@ -230,10 +230,28 @@ def filter_messages(
     return result.reset_index(drop=True)
 
 
-def analysis_packet(frame: pd.DataFrame, selected_ids: Iterable[str]) -> dict[str, object]:
-    selected = set(str(value) for value in selected_ids)
-    subset = normalize_frame(frame)
-    subset = subset[subset["message_id"].isin(selected)]
+def analysis_packet(
+    frame: pd.DataFrame,
+    selected_ids: Iterable[str],
+    context_before: int = 0,
+    context_after: int = 0,
+) -> dict[str, object]:
+    canonical = normalize_frame(frame)
+    selected = {str(value) for value in selected_ids}
+    include_indexes: set[int] = set()
+
+    for _, conversation in canonical.groupby("conversation_id", sort=False, dropna=False):
+        positions = list(conversation.index)
+        local_position = {index: pos for pos, index in enumerate(positions)}
+        for index in positions:
+            if canonical.at[index, "message_id"] not in selected:
+                continue
+            pos = local_position[index]
+            lo = max(0, pos - max(0, int(context_before)))
+            hi = min(len(positions), pos + max(0, int(context_after)) + 1)
+            include_indexes.update(positions[lo:hi])
+
+    subset = canonical.loc[sorted(include_indexes)] if include_indexes else canonical.iloc[0:0]
     messages = [
         {
             "message_id": row.message_id,
@@ -242,11 +260,16 @@ def analysis_packet(frame: pd.DataFrame, selected_ids: Iterable[str]) -> dict[st
             "sender": row.sender,
             "timestamp": row.timestamp.isoformat(),
             "text": row.text,
+            "selected": row.message_id in selected,
         }
         for row in subset.itertuples(index=False)
     ]
     return {
         "schema_version": 1,
+        "selected_message_ids": sorted(selected),
+        "selected_message_count": sum(1 for item in messages if item["selected"]),
         "message_count": len(messages),
+        "context_before": max(0, int(context_before)),
+        "context_after": max(0, int(context_after)),
         "messages": messages,
     }
