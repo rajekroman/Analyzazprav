@@ -7,7 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from analyzazprav.normalization import CanonicalDatabase, MessageInput
-from analyzazprav.processing import ProcessingConfig, ProcessingStore, load_a2_projection, process_messages
+from analyzazprav.processing import (
+    ProcessingConfig,
+    ProcessingStore,
+    load_a2_projection,
+    process_messages,
+)
 
 
 class A3RealA2ContractTests(unittest.TestCase):
@@ -29,7 +34,10 @@ class A3RealA2ContractTests(unittest.TestCase):
             identity_type="phone", identity_value="+420 777 111 222", canonical_name="Alice"
         )
         owner = self.db.get_or_create_participant(
-            identity_type="email", identity_value="owner@example.cz", canonical_name="Owner", is_self=True
+            identity_type="email",
+            identity_value="owner@example.cz",
+            canonical_name="Owner",
+            is_self=True,
         )
         conversation = self.db.get_or_create_conversation(
             source_type="fixture",
@@ -105,11 +113,29 @@ class A3RealA2ContractTests(unittest.TestCase):
         self.db.add_relation(second, first, "reply", {"origin": "fixture"})
         self.db.finish_import(run.id)
 
+        before = {
+            table: self.db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "participant",
+                "participant_identity",
+                "message",
+                "message_source",
+                "message_conversation",
+                "attachment",
+                "message_attachment_occurrence",
+            )
+        }
+
         projection = load_a2_projection(self.db.conn)
-        result = process_messages(list(projection.messages), list(projection.relations))
+        result = process_messages(
+            list(projection.messages),
+            list(projection.relations),
+            participants=list(projection.participants),
+        )
         by_id = {message.message_id: message for message in result.messages}
 
         self.assertEqual(len(result.messages), 2)
+        self.assertTrue(all(message.membership_id is not None for message in result.messages))
         self.assertEqual(len(result.threads), 1)
         self.assertEqual(result.threads[0].message_ids, (first, second))
         self.assertEqual(by_id[first].features.image_count, 1)
@@ -117,13 +143,28 @@ class A3RealA2ContractTests(unittest.TestCase):
         self.assertEqual(by_id[second].features.missing_attachment_count, 1)
         self.assertEqual(by_id[second].features.seconds_since_previous_other_sender, 1.0)
         self.assertIsNotNone(by_id[first].features.local_hour)
+        self.assertEqual(len(result.resolved_participants), 2)
+        self.assertEqual(len(result.participant_aliases), 2)
 
         store = ProcessingStore(self.db.conn, ROOT / "database" / "a3_schema.sql")
         store.initialize()
         store.replace_all(result, ProcessingConfig())
 
-        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM processed_message").fetchone()[0], 2)
-        self.assertEqual(self.db.conn.execute("SELECT raw_text FROM message_source WHERE message_id=?", (first,)).fetchone()[0], "Ahoj!!!")
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM processed_message").fetchone()[0],
+            2,
+        )
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT raw_text FROM message_source WHERE message_id=?", (first,)
+            ).fetchone()[0],
+            "Ahoj!!!",
+        )
+        after = {
+            table: self.db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in before
+        }
+        self.assertEqual(before, after)
         report = self.db.integrity_report()
         self.assertEqual(report["integrity"], "ok")
         self.assertEqual(report["foreign_key_errors"], [])

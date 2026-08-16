@@ -18,9 +18,19 @@ def _candidate(
 def audit_duplicate_candidates(
     messages: list[CanonicalMessage], *, tolerance_us: int
 ) -> tuple[DuplicateCandidate, ...]:
-    """Flag suspicious A2 canonical pairs without quadratic all-pairs comparison."""
+    """Flag suspicious A2 canonical pairs without merging or deleting records.
+
+    A2 v5 may expose the same canonical message once per conversation membership.
+    Duplicate audit therefore operates on unique canonical message IDs within each
+    conversation group and never reports a canonical message as a duplicate of itself.
+    """
     groups: dict[tuple[int, int | None, str | None, tuple[str, ...]], list[CanonicalMessage]] = {}
+    seen_occurrences: set[tuple[int, int]] = set()
     for message in messages:
+        occurrence = message.occurrence_key
+        if occurrence in seen_occurrences:
+            continue
+        seen_occurrences.add(occurrence)
         key = (
             message.conversation_id,
             message.sender_id,
@@ -33,25 +43,37 @@ def audit_duplicate_candidates(
     seen: set[tuple[int, int, str]] = set()
 
     def append(candidate: DuplicateCandidate) -> None:
+        if candidate.left_message_id == candidate.right_message_id:
+            return
         key = (candidate.left_message_id, candidate.right_message_id, candidate.classification)
         if key not in seen:
             seen.add(key)
             candidates.append(candidate)
 
     for group_key in sorted(groups, key=repr):
-        group = groups[group_key]
+        # One canonical message may occur in more than one membership, but inside one
+        # conversation it should contribute at most once to canonical duplicate audit.
+        by_message_id: dict[int, CanonicalMessage] = {}
+        for message in groups[group_key]:
+            by_message_id.setdefault(message.id, message)
+        group = list(by_message_id.values())
 
-        # Same stable source ID is strong evidence even when export timestamps differ.
         first_by_source_id: dict[str, CanonicalMessage] = {}
         for message in sorted(group, key=lambda item: item.id):
             if not message.source_message_id:
                 continue
             first = first_by_source_id.setdefault(message.source_message_id, message)
             if first.id != message.id:
-                append(_candidate(first, message, "exact_source_identity", 1.0, "source_message_id_v1"))
+                append(
+                    _candidate(
+                        first,
+                        message,
+                        "exact_source_identity",
+                        1.0,
+                        "source_message_id_v1",
+                    )
+                )
 
-        # For weaker cross-export evidence, adjacent equal-content records in time order
-        # are sufficient to connect a dense duplicate cluster without O(n²) pairs.
         timestamped = sorted(
             (message for message in group if message.timestamp_us is not None),
             key=lambda item: (item.timestamp_us, item.id),
@@ -61,6 +83,14 @@ def audit_duplicate_candidates(
                 continue
             if previous.source_message_id and previous.source_message_id == current.source_message_id:
                 continue
-            append(_candidate(previous, current, "probable_cross_export", 0.80, "temporal_content_adjacent_v2"))
+            append(
+                _candidate(
+                    previous,
+                    current,
+                    "probable_cross_export",
+                    0.80,
+                    "temporal_content_adjacent_v2",
+                )
+            )
 
     return tuple(candidates)

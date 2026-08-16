@@ -165,6 +165,8 @@ class AdapterAndStoreTests(unittest.TestCase):
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(processed_message)")}
         self.assertIn("image_count", columns)
         self.assertIn("local_hour", columns)
+        self.assertIn("membership_id", columns)
+        self.assertIn("resolved_sender_id", columns)
         thread_columns = {row[1]: row for row in self.conn.execute("PRAGMA table_info(conversation_thread)")}
         self.assertEqual(thread_columns["session_id"][3], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], original_message_count)
@@ -172,7 +174,11 @@ class AdapterAndStoreTests(unittest.TestCase):
 
     def test_adapter_pipeline_media_calendar_and_persistence(self):
         projection = load_a2_projection(self.conn)
-        result = process_messages(list(projection.messages), list(projection.relations))
+        result = process_messages(
+            list(projection.messages),
+            list(projection.relations),
+            participants=list(projection.participants),
+        )
         by_id = {m.message_id: m for m in result.messages}
         self.assertEqual(by_id[1].features.image_count, 1)
         self.assertEqual(by_id[1].features.utc_hour, 0)

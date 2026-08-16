@@ -1,67 +1,134 @@
 # A3 — Zpracování a třídění
 
-A3 je deterministická transformační vrstva nad kanonickými daty A2. Nemění raw ani canonical A2 záznamy a neprovádí behaviorální nebo psychologickou interpretaci.
+A3 je deterministická vrstva L2 / DERIVED nad kanonickými daty A2. Nemění RAW ani NORMALIZED A2 záznamy a nevytváří psychologické interpretace.
 
 ## Vlastnictví odpovědností
 
-- **A2:** canonical participants/person identities, conversations, canonical messages, source provenance and authoritative deduplication.
-- **A3:** conservative text cleaning, deterministic ordering, secondary duplicate audit, sender runs, temporal sessions, source-evidenced reply threads, media classification, calendar features and persistence of derived data.
-- **A4:** communication statistics and behavioral metrics.
-- **A5:** selective AI interpretation over evidence selected by A4.
+- **A2:** kanonické participant identity, conversations, messages, message↔conversation memberships, attachments a source provenance.
+- **A3:** conservative cleaning, derived participant resolution/aliases, deterministic ordering, secondary duplicate audit, sender runs, sessions, source-evidenced reply threads, media classification, calendar/timing features a persistence derived dat.
+- **A4:** programové komunikační metriky nad stabilním A2/A3 kontraktem.
+- **A5:** selektivní AI interpretace pouze nad evidence připravenou A4.
 
-A3 používá `sender_id`/participant identity z A2; nevytváří konkurenční systém identity osob.
+A3 participant resolution není konkurenční kanonický model. A2 `participant` a `participant_identity` zůstávají autoritativní; A3 nad nimi vytváří auditovatelnou derived mapu pro analytické použití.
 
 ## Invariants
 
-1. A3 is read-only with respect to A2 raw/canonical records.
-2. A3 never deletes or merges canonical messages.
-3. Repeated punctuation, letter case and emoji survive cleaning.
-4. Probable duplicates are audit candidates only and retain both canonical message IDs.
-5. Temporal adjacency is a measurable feature, never proof of a reply.
-6. Same A2 projection + config produces the same derived logical structure.
-7. Session boundary defaults to a gap strictly greater than six hours.
-8. A missing timestamp produces no latency and is isolated from temporal session inference.
-9. Threads are created only from explicit source relations whose relation type is configured as a reply relation. An explicit reply may span multiple temporal sessions; in that case the thread has no single `session_id`. Semantic topic inference is deferred.
-10. Missing attachment files remain represented and are counted; their parent message is never discarded.
-11. Local calendar fields are derived only when A2 provides the per-message timezone offset. If it is absent, local fields remain `NULL`.
+1. A3 je read-only vůči A2 RAW/NORMALIZED tabulkám.
+2. A3 nikdy nemaže ani neslučuje kanonické messages.
+3. Každý platný A2 `message_conversation` membership je v A3 zpracován samostatně.
+4. Derived message features jsou identifikovány kombinací processing run + message + conversation a zachovávají A2 `membership_id`, pokud existuje.
+5. Repeated punctuation, case a emoji přežijí cleaning.
+6. Probable duplicates jsou pouze audit candidates.
+7. Same A2 projection + config → stejný logický A3 výsledek.
+8. Default session boundary je gap **strictly greater than 6 hours**.
+9. Missing timestamp nevytváří vymyšlenou latency ani calendar fields.
+10. Factual thread vzniká pouze z explicitního source relation.
+11. Explicit reply může překročit session; nejednoznačný multi-conversation reply se bez conversation evidence nepřiřadí žádné conversation.
+12. Missing attachment nikdy neodstraní parent message.
+13. Local calendar fields vznikají pouze z explicitního A2 timezone offset.
+14. Participant merge se neprovádí pouze na základě jména.
 
-## A2 contract used
+## Message ↔ conversation memberships
 
-A3 reads:
+A2 v5 podporuje M:N vztah `message ↔ conversation`. A3 proto zpracovává **message occurrence in conversation**, ne pouze globální `message_id`.
 
-- `analysis_messages` for canonical messages, sender, UTC timestamp, per-message timezone offset, type and text;
-- `analysis_attachments` for attachment identity, hash, MIME type, file metadata and availability;
-- `message_source` for stable source identifiers/order hints;
-- `message_relation` for source-evidenced relations such as replies.
+Interní deterministický klíč je:
 
-It does not depend on iMessage, iMazing or another A1 export format.
+`(conversation_id, message_id)`
+
+A2 `membership_id` je zachován jako provenance/evidence ID.
+
+Příklad:
+
+```text
+message 100
+ ├─ membership 500 → conversation 10
+ └─ membership 501 → conversation 20
+```
+
+A3 vytvoří dvě derived rows. Canonical `message 100` zůstává v A2 pouze jednou.
+
+`processing_run` eviduje odděleně počet kanonických messages a počet memberships.
+
+## Participant resolution a aliasy
+
+A3 načítá:
+
+- `participant`
+- `participant_identity`
+
+a vytváří derived:
+
+- `resolved_participant`
+- `resolved_participant_member`
+- `participant_alias`
+- `participant_resolution_candidate`
+
+### Bezpečná výchozí pravidla
+
+- jeden A2 participant → jeden resolved participant;
+- více A2 participants explicitně označených `is_self=1` → jeden resolved self participant (`explicit_is_self_union_v1`, confidence `1.0`);
+- všechny A2 identities se zachovají jako aliases s odkazem na původní `participant_id` a `participant_identity_id`;
+- shodné normalizované `canonical_name` u různých participants → pouze candidate (`confidence=0.35`), nikdy automatický merge;
+- nejisté aliasy se neslučují destruktivně.
+
+`processed_message.resolved_sender_id` umožňuje A4 agregovat různé identity stejné explicitně potvrzené osoby.
+
+Sender-runs používají resolved sender. Pokud tedy dvě sousední zprávy pocházejí ze dvou A2 identities, které jsou explicitně stejný `is_self` participant cluster, nevznikne falešný nový turn.
+
+## Replies a threads
+
+`reply` / `reply_to` jsou factual pouze tehdy, když jejich conversation membership lze určit bez hádání.
+
+- source a target mají právě jednu společnou conversation → relation se použije;
+- mají více společných conversations → A3 relation nepřiřadí, pokud metadata neposkytují explicitní `conversation_id`;
+- relation nikdy nepropojí dvě různé conversations.
+
+Structural thread method: `explicit_reply_component_v2`, confidence `1.0`.
+
+## Duplicate audit
+
+A2 je autorita kanonické deduplikace. A3 pouze flaguje:
+
+- `exact_source_identity`
+- `probable_cross_export`
+
+Kandidáti nikdy nemažou canonical messages. Porovnávání je omezené na relevantní sousední records, ne O(n²) all-pairs.
 
 ## Text processing
 
-Cleaning is deliberately conservative: transport control characters, line-ending differences and NBSP are normalized, while case, emoji and repeated `!`/`?` are retained. `text_clean` is stored separately; A2 source/canonical text remains unchanged.
+`text_clean` normalizuje pouze transportní artefakty (CR/LF, NBSP, control chars, trailing transport whitespace). Zachovává case, emoji, repeated punctuation a meaningful line breaks.
 
-## Media classification
+A2 `message.text` a `message_source.raw_text` se nemění.
 
-Attachments are deterministically classified from MIME type first and filename extension second into:
+## Media
 
-- `image`
-- `gif`
-- `video`
-- `audio`
-- `document`
-- `other`
+A3 deterministicky klasifikuje attachment occurrences podle MIME, fallback extension:
 
-A3 also stores total attachment count and count of attachments whose A2 availability is `missing`. Voice-message semantics are not guessed from a generic audio file; that distinction can use an explicit source/message type when available.
+- image
+- gif
+- video
+- audio
+- document
+- other
 
-## Time periods
+Attachment occurrence rows z A2 se nezplošťují; opakovaný stejný blob je při feature counts započítán podle skutečných occurrences.
 
-For every timestamped message A3 derives UTC year, month, day, weekday and hour. If `timezone_offset_min` is present, it also derives the corresponding local year/month/day/weekday/hour using that exact per-message offset, so CET/CEST transitions do not require a hard-coded offset.
+## Time
 
-`utc_weekday` and `local_weekday` follow Python's `datetime.weekday()` convention: Monday = `0`, Sunday = `6`.
+A3 počítá UTC year/month/day/weekday/hour. Lokální atributy počítá pouze z A2 `timezone_offset_min`.
+
+Žádný hard-coded CET/CEST offset.
 
 ## Persistence
 
-A3 initializes `database/a3_schema.sql` and replaces only A3-derived tables. A2 canonical tables remain untouched. The MVP deliberately uses deterministic full rebuilds; incremental recomputation can be added once the import pipeline stabilizes.
+`database/a3_schema.sql` obsahuje pouze rebuildovatelná DERIVED data. Při změně draft A3 schema lze A3 tabulky znovu vytvořit; A2 tabulky se nikdy nedropují.
+
+Hlavní analytické views:
+
+- `a3_analysis_messages`
+- `a3_analysis_participants`
+- `a3_analysis_participant_aliases`
 
 ## CLI
 
@@ -69,4 +136,20 @@ A3 initializes `database/a3_schema.sql` and replaces only A3-derived tables. A2 
 python -m analyzazprav.processing path/to/messages.sqlite
 ```
 
-Optional flags configure the session gap and duplicate timestamp tolerance.
+Výstup reportuje zvlášť canonical message count a membership count.
+
+## Výstup pro A4
+
+A4 dostane zejména:
+
+- conversation/message/membership evidence IDs;
+- resolved participant + alias mapping;
+- resolved sender per membership;
+- sender runs;
+- sessions;
+- explicit threads;
+- duplicate audit candidates;
+- media/timing/calendar features;
+- processing version/run provenance.
+
+A4 nesmí znovu rekonstruovat source memberships ani vytvářet vlastní person model.

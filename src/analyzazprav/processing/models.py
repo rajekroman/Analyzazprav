@@ -4,6 +4,61 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
+MessageOccurrenceKey = tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantIdentity:
+    id: int
+    participant_id: int
+    identity_type: str
+    normalized_value: str
+    original_value: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalParticipant:
+    """Read-only projection of one A2 canonical participant."""
+
+    id: int
+    canonical_name: str | None
+    is_self: bool
+    identities: tuple[ParticipantIdentity, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedParticipant:
+    """A3 derived person grouping over one or more A2 participants."""
+
+    id: int
+    canonical_name: str | None
+    is_self: bool
+    member_participant_ids: tuple[int, ...]
+    method: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantAlias:
+    resolved_participant_id: int
+    participant_id: int
+    participant_identity_id: int
+    identity_type: str
+    normalized_value: str
+    original_value: str | None
+    method: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantResolutionCandidate:
+    left_participant_id: int
+    right_participant_id: int
+    reason: str
+    confidence: float
+    method: str
+
+
 @dataclass(frozen=True, slots=True)
 class AttachmentRef:
     id: int
@@ -14,6 +69,7 @@ class AttachmentRef:
     availability: str
     position: int | None
     media_type: str
+    occurrence_id: int | None = None
 
     @property
     def dedup_key(self) -> str:
@@ -22,7 +78,7 @@ class AttachmentRef:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalMessage:
-    """Read-only projection of one A2 canonical message."""
+    """One A2 message-conversation membership projected for A3 processing."""
 
     id: int
     conversation_id: int
@@ -34,6 +90,11 @@ class CanonicalMessage:
     timezone_offset_min: int | None = None
     message_type: str = "text"
     attachments: tuple[AttachmentRef, ...] = ()
+    membership_id: int | None = None
+
+    @property
+    def occurrence_key(self) -> MessageOccurrenceKey:
+        return (self.conversation_id, self.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +109,7 @@ class MessageRelation:
 class A2Projection:
     messages: tuple[CanonicalMessage, ...]
     relations: tuple[MessageRelation, ...] = field(default_factory=tuple)
+    participants: tuple[CanonicalParticipant, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,13 +126,16 @@ class SenderRun:
     id: int
     conversation_id: int
     sender_id: int | None
+    resolved_participant_id: int | None
     first_message_id: int
     last_message_id: int
+    first_membership_id: int | None
+    last_membership_id: int | None
     start_us: int | None
     end_us: int | None
     message_count: int
     char_count: int
-    method: str = "deterministic_sender_run_v1"
+    method: str = "deterministic_resolved_sender_run_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +144,13 @@ class Session:
     conversation_id: int
     first_message_id: int
     last_message_id: int
+    first_membership_id: int | None
+    last_membership_id: int | None
     start_us: int | None
     end_us: int | None
     message_count: int
     gap_threshold_us: int
-    method: str = "temporal_gap_v1"
+    method: str = "temporal_gap_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +161,7 @@ class Thread:
     message_ids: tuple[int, ...]
     method: str
     confidence: float
+    membership_ids: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,12 +201,19 @@ class MessageFeatures:
 @dataclass(frozen=True, slots=True)
 class ProcessedMessage:
     message_id: int
+    conversation_id: int
+    membership_id: int | None
     sequence_number: int
     text_clean: str | None
     sender_run_id: int
     session_id: int
     thread_id: int | None
+    resolved_sender_id: int | None
     features: MessageFeatures
+
+    @property
+    def occurrence_key(self) -> MessageOccurrenceKey:
+        return (self.conversation_id, self.message_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,3 +223,6 @@ class ProcessingResult:
     sessions: tuple[Session, ...]
     threads: tuple[Thread, ...] = field(default_factory=tuple)
     duplicate_candidates: tuple[DuplicateCandidate, ...] = field(default_factory=tuple)
+    resolved_participants: tuple[ResolvedParticipant, ...] = field(default_factory=tuple)
+    participant_aliases: tuple[ParticipantAlias, ...] = field(default_factory=tuple)
+    participant_resolution_candidates: tuple[ParticipantResolutionCandidate, ...] = field(default_factory=tuple)
