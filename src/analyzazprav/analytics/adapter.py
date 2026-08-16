@@ -35,61 +35,33 @@ def _latest_completed_processing_run_id(conn: sqlite3.Connection) -> int | None:
 def _analytic_query(
     conn: sqlite3.Connection,
     conversation_id: int | None,
-) -> tuple[str, tuple[int, ...]]:
-    """Build a compatibility query for legacy A3 fixtures and membership-aware A3 v5.
+) -> tuple[str, tuple[int, ...], bool]:
+    """Build the A4 read query over the integrated A2/A3 contract.
 
-    A3 v5 can contain the same canonical message in multiple conversation
-    memberships and retains `processing_run_id`. Joining only by message_id would
-    therefore duplicate or cross-wire evidence. New-contract reads are scoped to
-    the latest completed processing run and exact conversation/membership.
+    Production databases expose `analysis_messages.membership_id` and A3's
+    `analysis_processed_messages_latest`. Joining by membership is authoritative:
+    one canonical message may legitimately belong to several conversations.
+
+    A narrow legacy-fixture fallback remains only so isolated unit tests can
+    exercise A4 calculations without recreating the whole A1-A3 schema.
     """
 
-    pm_columns = _columns(conn, "processed_message")
     am_columns = _columns(conn, "analysis_messages")
+    latest_columns = _columns(conn, "analysis_processed_messages_latest")
+    integrated_contract = bool(latest_columns) and "membership_id" in am_columns
 
-    has_pm_run = "processing_run_id" in pm_columns
-    has_pm_conversation = "conversation_id" in pm_columns
-    has_pm_membership = "membership_id" in pm_columns
-    has_am_membership = "membership_id" in am_columns
-    has_resolved_sender = "resolved_sender_id" in pm_columns
-
-    latest_run_id = _latest_completed_processing_run_id(conn)
-    if has_pm_run and latest_run_id is None:
-        raise RuntimeError("A4 requires a completed A3 processing_run")
-
-    participant_expr = (
-        "COALESCE(pm.resolved_sender_id, am.sender_id)"
-        if has_resolved_sender
-        else "am.sender_id"
-    )
-    joins = ["pm.message_id = am.id"]
     params: list[int] = []
-
-    if has_pm_conversation:
-        joins.append("pm.conversation_id = am.conversation_id")
-    if has_pm_membership and has_am_membership:
-        joins.append(
-            "((pm.membership_id = am.membership_id) OR "
-            "(pm.membership_id IS NULL AND am.membership_id IS NULL))"
-        )
-    if has_pm_run:
-        joins.append("pm.processing_run_id = ?")
-        params.append(int(latest_run_id))
-
     filters: list[str] = []
     if conversation_id is not None:
         filters.append("am.conversation_id = ?")
         params.append(int(conversation_id))
+    where_clause = "WHERE " + " AND ".join(filters) if filters else ""
 
-    where_clause = ""
-    if filters:
-        where_clause = "WHERE " + " AND ".join(filters)
-
-    membership_order = ", am.membership_id" if has_am_membership else ""
-    query = f"""
+    if integrated_contract:
+        query = f"""
 SELECT am.id,
        am.conversation_id,
-       {participant_expr} AS participant_id,
+       am.sender_id,
        am.sent_at_utc_us,
        COALESCE(pm.text_clean, ''),
        pm.session_id,
@@ -108,20 +80,87 @@ SELECT am.id,
        pm.local_month,
        pm.local_day,
        pm.local_weekday,
-       pm.local_hour
+       pm.local_hour,
+       am.membership_id
+FROM analysis_messages AS am
+JOIN analysis_processed_messages_latest AS pm
+  ON pm.membership_id = am.membership_id
+ AND pm.message_id = am.id
+ AND pm.conversation_id = am.conversation_id
+{where_clause}
+ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
+"""
+        return query, tuple(params), True
+
+    pm_columns = _columns(conn, "processed_message")
+    if not pm_columns:
+        raise RuntimeError("A4 requires A3 processed_message data")
+
+    has_pm_run = "processing_run_id" in pm_columns
+    has_pm_conversation = "conversation_id" in pm_columns
+    has_pm_membership = "membership_id" in pm_columns
+    has_am_membership = "membership_id" in am_columns
+    joins = ["pm.message_id = am.id"]
+    fallback_params: list[int] = []
+
+    if has_pm_conversation:
+        joins.append("pm.conversation_id = am.conversation_id")
+    if has_pm_membership and has_am_membership:
+        joins.append("pm.membership_id = am.membership_id")
+    if has_pm_run:
+        processing_run_id = _latest_completed_processing_run_id(conn)
+        if processing_run_id is None:
+            raise RuntimeError("A4 requires a completed A3 processing_run")
+        joins.append("pm.processing_run_id = ?")
+        fallback_params.append(processing_run_id)
+
+    fallback_filters: list[str] = []
+    if conversation_id is not None:
+        fallback_filters.append("am.conversation_id = ?")
+        fallback_params.append(int(conversation_id))
+    fallback_where = (
+        "WHERE " + " AND ".join(fallback_filters) if fallback_filters else ""
+    )
+    membership_expr = "am.membership_id" if has_am_membership else "NULL"
+    membership_order = ", am.membership_id" if has_am_membership else ""
+
+    query = f"""
+SELECT am.id,
+       am.conversation_id,
+       am.sender_id,
+       am.sent_at_utc_us,
+       COALESCE(pm.text_clean, ''),
+       pm.session_id,
+       pm.sequence_number,
+       pm.word_count,
+       pm.char_count,
+       pm.question_mark_count,
+       pm.exclamation_mark_count,
+       pm.has_attachment,
+       pm.utc_year,
+       pm.utc_month,
+       pm.utc_day,
+       pm.utc_weekday,
+       pm.utc_hour,
+       pm.local_year,
+       pm.local_month,
+       pm.local_day,
+       pm.local_weekday,
+       pm.local_hour,
+       {membership_expr}
 FROM analysis_messages AS am
 JOIN processed_message AS pm
   ON {' AND '.join(joins)}
-{where_clause}
+{fallback_where}
 ORDER BY am.conversation_id, pm.sequence_number, am.id{membership_order}
 """
-    return query, tuple(params)
+    return query, tuple(fallback_params), False
 
 
 def load_analytic_messages(
     conn: sqlite3.Connection, conversation_id: int | None = None
 ) -> list[AnalyticMessage]:
-    query, params = _analytic_query(conn, conversation_id)
+    query, params, integrated_contract = _analytic_query(conn, conversation_id)
     rows = conn.execute(query, params)
     messages = [
         AnalyticMessage(
@@ -143,24 +182,32 @@ def load_analytic_messages(
             local_date=_date_string(row[17], row[18], row[19]),
             local_weekday=None if row[20] is None else int(row[20]),
             local_hour=None if row[21] is None else int(row[21]),
+            membership_id=None if row[22] is None else int(row[22]),
         )
         for row in rows
     ]
 
-    # The A3 v5 contract guarantees at most one membership for a canonical
-    # message inside one conversation. Fail closed if a malformed join violates
-    # that invariant rather than inflating A4 metrics silently.
-    seen: set[tuple[int, int]] = set()
-    duplicates: list[tuple[int, int]] = []
+    seen_memberships: set[int] = set()
+    seen_conversation_messages: set[tuple[int, int]] = set()
+    duplicate_evidence: list[str] = []
     for message in messages:
-        key = (message.conversation_id, message.message_id)
-        if key in seen:
-            duplicates.append(key)
-        seen.add(key)
-    if duplicates:
+        conversation_message = (message.conversation_id, message.message_id)
+        if conversation_message in seen_conversation_messages:
+            duplicate_evidence.append(f"conversation/message={conversation_message}")
+        seen_conversation_messages.add(conversation_message)
+
+        if message.membership_id is not None:
+            if message.membership_id in seen_memberships:
+                duplicate_evidence.append(f"membership={message.membership_id}")
+            seen_memberships.add(message.membership_id)
+        elif integrated_contract:
+            duplicate_evidence.append(
+                f"missing-membership=({message.conversation_id},{message.message_id})"
+            )
+
+    if duplicate_evidence:
         raise RuntimeError(
-            "A4 A3-contract reconciliation failed; duplicate conversation/message "
-            f"memberships: {sorted(set(duplicates))}"
+            "A4 A2/A3 reconciliation failed: " + ", ".join(sorted(set(duplicate_evidence)))
         )
     return messages
 
@@ -169,8 +216,16 @@ def conversation_fingerprint(messages: Iterable[AnalyticMessage]) -> str:
     """Hash every A2/A3 field that can materially affect A4 output."""
 
     digest = hashlib.sha256()
-    for message in sorted(messages, key=lambda item: (item.sequence_number, item.message_id)):
+    for message in sorted(
+        messages,
+        key=lambda item: (
+            item.sequence_number,
+            item.membership_id if item.membership_id is not None else -1,
+            item.message_id,
+        ),
+    ):
         payload = (
+            message.membership_id,
             message.message_id,
             message.conversation_id,
             message.participant_id,
@@ -258,13 +313,7 @@ def analyze_incremental_database(
     config: AnalyticsConfig | None = None,
     conversation_ids: Iterable[int] | None = None,
 ) -> list[ConversationAnalytics]:
-    """Recompute whole conversations when source *or analysis rules* changed.
-
-    A new import can shift A3 session and turn context retroactively. Whole-
-    conversation granularity is therefore conservative and reproducible. v6
-    also tracks an analysis signature so a code/config version change cannot
-    silently reuse stale derived metrics.
-    """
+    """Recompute whole conversations when source or analysis rules changed."""
 
     cfg = config or AnalyticsConfig()
     grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
