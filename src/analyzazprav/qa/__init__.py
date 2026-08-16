@@ -1,3 +1,4 @@
+from .a4_current import validate_a4_metrics
 from .participant_resolution import validate_participant_resolution
 from .reconciliation import validate_staging_bundle
 from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING, validate_staging_dir
@@ -11,5 +12,6 @@ __all__ = [
     "validate_staging_bundle",
     "validate_vertical_pipeline",
     "validate_participant_resolution",
+    "validate_a4_metrics",
     "canonical_fingerprint",
 ]
