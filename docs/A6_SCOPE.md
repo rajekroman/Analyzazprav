@@ -9,14 +9,15 @@ A6 je tenká prezentační vrstva nad lokálními daty a výsledky analytického
 ## MVP
 
 - Streamlit, čistě lokálně;
-- vestavěná demo data pro spuštění bez A1/A2;
+- anonymizovaná vestavěná demo data pro spuštění bez A1/A2;
 - SQLite pouze pro čtení (`mode=ro`);
 - automatická detekce kompatibilní message tabulky/view;
 - filtr kontaktu, období, odesílatele a full-textového výrazu;
 - auditovatelný prohlížeč zpráv s `message_id`;
 - aktivita, poměr odesílatelů a response latency;
 - explicitní výběr zpráv;
-- export kontextového JSON balíčku pro A5;
+- konfigurovatelné okolí před/po vybraných zprávách;
+- export kontextového JSON balíčku pro A5 s příznakem `selected`;
 - žádné automatické AI volání.
 
 ## Hranice odpovědnosti
@@ -41,3 +42,7 @@ A6 nevyžaduje konkrétní název view. Adapter hledá read-only tabulku/view s 
 - `text` / `body` / `raw_text`.
 
 Volitelně mapuje conversation/contact/sender sloupce. Jakmile A2 stabilizuje názvy analytických views, adapter lze zjednodušit bez zásahu do UI.
+
+## Kontrakt A5
+
+A6 exportuje pouze explicitně vybrané zprávy a zvolený počet okolních zpráv ve stejném `conversation_id`. Každá položka nese `message_id`, čas, odesílatele, text a boolean `selected`, aby A5 mohl rozlišit evidenci od kontextu.
