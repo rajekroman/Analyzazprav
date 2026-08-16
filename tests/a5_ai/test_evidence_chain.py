@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -35,7 +37,8 @@ class MemorySource:
         return [
             message
             for message in self.messages
-            if message.conversation_id == conversation_id and start_ts <= message.timestamp <= end_ts
+            if message.conversation_id == conversation_id
+            and start_ts <= message.timestamp <= end_ts
         ]
 
 
@@ -47,7 +50,11 @@ def payload(*, metric_ref=None, include_assertions=False):
     if metric_ref is not None:
         evidence["metric_refs"] = [metric_ref]
     result = {
-        "summary": {"text": "Summary", "confidence": 0.72, "evidence": evidence},
+        "summary": {
+            "text": "Summary",
+            "confidence": 0.72,
+            "evidence": evidence,
+        },
         "observations": [
             {
                 "text": "Observed behavior",
@@ -72,9 +79,23 @@ def payload(*, metric_ref=None, include_assertions=False):
         "overall_confidence": 0.72,
     }
     if include_assertions:
-        result["turning_points"] = [{"text": "A turning point", "confidence": 0.8, "evidence": evidence}]
-        result["participant_p1"] = {"text": "P1 conclusion", "confidence": 0.6, "evidence": evidence}
-        result["shared_dynamic"] = {"text": "Shared dynamic", "confidence": 0.65, "evidence": evidence}
+        result["turning_points"] = [
+            {
+                "text": "A turning point",
+                "confidence": 0.8,
+                "evidence": evidence,
+            }
+        ]
+        result["participant_p1"] = {
+            "text": "P1 conclusion",
+            "confidence": 0.6,
+            "evidence": evidence,
+        }
+        result["shared_dynamic"] = {
+            "text": "Shared dynamic",
+            "confidence": 0.65,
+            "evidence": evidence,
+        }
     return result
 
 
@@ -110,16 +131,23 @@ class EvidenceChainTests(unittest.TestCase):
             evidence.messages[0].excerpt,
             "This is a source message with normalized whitespace.",
         )
-        self.assertEqual(result.interpretations[0].evidence.messages[0].message_id, "m1")
+        self.assertEqual(
+            result.interpretations[0].evidence.messages[0].message_id,
+            "m1",
+        )
         self.assertEqual(result.summary, "Summary")
         self.assertEqual(result.summary_evidence.messages[0].message_id, "m1")
 
     def test_assertion_bearing_synthesis_fields_require_and_preserve_evidence(self):
-        result = parse_and_validate_result(payload(include_assertions=True), self.context())
+        result = parse_and_validate_result(
+            payload(include_assertions=True), self.context()
+        )
         self.assertEqual(result.turning_points, ("A turning point",))
         self.assertEqual(result.turning_point_evidence[0].message_ids, ("m1",))
         self.assertEqual(result.participant_p1, "P1 conclusion")
-        self.assertEqual(result.participant_p1_evidence.messages[0].sender_id, "p2")
+        self.assertEqual(
+            result.participant_p1_evidence.messages[0].sender_id, "p2"
+        )
         self.assertEqual(result.shared_dynamic, "Shared dynamic")
         self.assertEqual(result.shared_dynamic_evidence.message_ids, ("m1",))
 
@@ -142,7 +170,12 @@ class EvidenceChainTests(unittest.TestCase):
         )
         context = self.context(candidate)
         result = parse_and_validate_result(
-            payload(metric_ref={"phase": "during", "name": "median_response_latency_seconds"}),
+            payload(
+                metric_ref={
+                    "phase": "during",
+                    "name": "median_response_latency_seconds",
+                }
+            ),
             context,
         )
         metric = result.observations[0].evidence.metrics[0]
@@ -154,7 +187,9 @@ class EvidenceChainTests(unittest.TestCase):
     def test_unknown_metric_reference_is_rejected(self):
         with self.assertRaises(ValidationError):
             parse_and_validate_result(
-                payload(metric_ref={"phase": "during", "name": "invented_metric"}),
+                payload(
+                    metric_ref={"phase": "during", "name": "invented_metric"}
+                ),
                 self.context(),
             )
 
@@ -174,9 +209,85 @@ class EvidenceChainTests(unittest.TestCase):
             self.assertEqual(cached.message_id, "m1")
             self.assertEqual(cached.timestamp, BASE.isoformat())
             self.assertEqual(cached.sender_id, "p2")
-            self.assertEqual(second.result.summary_evidence.message_ids, ("m1",))
-            self.assertEqual(second.result.turning_point_evidence[0].message_ids, ("m1",))
-            self.assertEqual(second.result.shared_dynamic_evidence.message_ids, ("m1",))
+            self.assertEqual(
+                second.result.summary_evidence.message_ids, ("m1",)
+            )
+            self.assertEqual(
+                second.result.turning_point_evidence[0].message_ids, ("m1",)
+            )
+            self.assertEqual(
+                second.result.shared_dynamic_evidence.message_ids, ("m1",)
+            )
+            self.assertEqual(provider.calls, 1)
+
+    def test_corrupted_cached_excerpt_is_rejected_and_recomputed(self):
+        provider = StaticProvider(payload(include_assertions=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "a5.sqlite3"
+            analyzer = AIAnalyzer(
+                context_builder=ContextBuilder(self.source),
+                provider=provider,
+                cache=AnalysisCache(cache_path),
+            )
+            first = analyzer.analyze(self.request)
+            self.assertEqual(first.status, AnalysisStatus.COMPLETED)
+            self.assertEqual(provider.calls, 1)
+
+            with sqlite3.connect(cache_path) as conn:
+                row = conn.execute(
+                    "SELECT context_hash, result_json FROM ai_analysis"
+                ).fetchone()
+                cached = json.loads(row[1])
+                cached["summary_evidence"]["messages"][0]["excerpt"] = (
+                    "tampered excerpt"
+                )
+                conn.execute(
+                    "UPDATE ai_analysis SET result_json=? WHERE context_hash=?",
+                    (json.dumps(cached), row[0]),
+                )
+                conn.commit()
+
+            second = analyzer.analyze(self.request)
+            self.assertEqual(second.status, AnalysisStatus.COMPLETED)
+            self.assertEqual(provider.calls, 2)
+            self.assertEqual(
+                second.result.summary_evidence.messages[0].excerpt,
+                "This is a source message with normalized whitespace.",
+            )
+
+    def test_corrupted_cached_message_id_is_rejected_and_recomputed(self):
+        provider = StaticProvider(payload())
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "a5.sqlite3"
+            analyzer = AIAnalyzer(
+                context_builder=ContextBuilder(self.source),
+                provider=provider,
+                cache=AnalysisCache(cache_path),
+            )
+            first = analyzer.analyze(self.request)
+            self.assertEqual(first.status, AnalysisStatus.COMPLETED)
+
+            with sqlite3.connect(cache_path) as conn:
+                row = conn.execute(
+                    "SELECT context_hash, result_json FROM ai_analysis"
+                ).fetchone()
+                cached = json.loads(row[1])
+                cached["observations"][0]["evidence"]["message_ids"] = ["ghost"]
+                cached["observations"][0]["evidence"]["messages"][0][
+                    "message_id"
+                ] = "ghost"
+                conn.execute(
+                    "UPDATE ai_analysis SET result_json=? WHERE context_hash=?",
+                    (json.dumps(cached), row[0]),
+                )
+                conn.commit()
+
+            second = analyzer.analyze(self.request)
+            self.assertEqual(second.status, AnalysisStatus.COMPLETED)
+            self.assertEqual(provider.calls, 2)
+            self.assertEqual(
+                second.result.observations[0].evidence.message_ids, ("m1",)
+            )
 
 
 if __name__ == "__main__":
