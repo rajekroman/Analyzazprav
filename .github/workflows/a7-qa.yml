@@ -42,3 +42,23 @@ jobs:
             echo "Corrupt fixture unexpectedly passed"
             exit 1
           fi
+
+  a4-pinned-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout A7
+        uses: actions/checkout@v4
+      - name: Checkout pinned A4 v6
+        uses: actions/checkout@v4
+        with:
+          ref: ff18c7bd561583451f5b1c5f57f2cc0c82b5d200
+          path: a4-under-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned A4 stack
+        run: python -m pip install -e a4-under-test
+      - name: Compare actual A4 output with independent A7 oracle
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/a4-under-test/src
+        run: python -m qa.a4_live_contract
