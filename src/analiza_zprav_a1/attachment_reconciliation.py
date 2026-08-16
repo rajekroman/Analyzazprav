@@ -5,8 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .relation_reconciliation import reconcile_bundle as _base_reconcile_bundle
-from .relation_reconciliation import write_reconciliation
+from .conversation_row_reconciliation import reconcile_bundle as _base_reconcile_bundle
+from .conversation_row_reconciliation import write_reconciliation
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 ATTACHMENT_RELATION_PAYLOAD_KEY = "__analyzazprav_a1_message_attachment_relation__"
