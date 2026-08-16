@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .attachments import resolve_attachments
 from .hashing import sha256_file, stable_message_key
@@ -12,6 +12,7 @@ from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
+from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
@@ -43,10 +44,10 @@ def _source_record_key(source_hash: str, source_type: str, record: MessageRecord
     """Return the deterministic identity of one physical source occurrence.
 
     For Apple `chat.db`, `message.ROWID` identifies the physical source message
-    inside the immutable source snapshot. Conversation relations are deliberately
-    excluded so adding/removing a `chat_message_join` relation cannot change the
-    source message identity. Legacy adapters retain their v1 key material until
-    their own occurrence contracts are explicitly versioned.
+    inside the immutable logical SQLite snapshot. Conversation relations are
+    deliberately excluded so relational cardinality cannot change source-message
+    identity. Legacy adapters retain their v1 key material until their own
+    occurrence contracts are explicitly versioned.
     """
 
     if source_type == "imessage_chat_db":
@@ -82,12 +83,15 @@ def _write_records(
     parser_version: str,
     output_dir: Path,
     attachments_root: Path | None = None,
+    source_hash_override: str | None = None,
+    source_name_override: str | None = None,
+    source_metadata: Mapping[str, object] | None = None,
 ) -> ImportStats:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_jsonl = output_dir / "messages.jsonl"
     manifest_path = output_dir / "manifest.json"
     errors_jsonl = output_dir / "errors.jsonl"
-    source_hash = sha256_file(source_path)
+    source_hash = source_hash_override or sha256_file(source_path)
 
     seen = emitted = attachments = resolved = missing = errors = 0
     with (
@@ -137,13 +141,17 @@ def _write_records(
                 )
                 error_stream.write("\n")
 
+    source_manifest: dict[str, object] = {
+        "type": source_type,
+        "name": source_name_override or source_path.name,
+        "sha256": source_hash,
+    }
+    if source_metadata:
+        source_manifest.update(source_metadata)
+
     manifest = {
         "contract_version": A1_CONTRACT_VERSION,
-        "source": {
-            "type": source_type,
-            "name": source_path.name,
-            "sha256": source_hash,
-        },
+        "source": source_manifest,
         "parser": {"name": parser_name, "version": parser_version},
         "source_record_key": _record_key_manifest(source_type),
         "attachments": {
@@ -187,15 +195,27 @@ def import_imessage(
         raise FileNotFoundError(chat_db)
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
-    return _write_records(
-        IMessageParser(chat_db).iter_messages(),
-        source_path=chat_db,
-        source_type="imessage_chat_db",
-        parser_name=IMESSAGE_PARSER_NAME,
-        parser_version=IMESSAGE_PARSER_VERSION,
-        output_dir=output_dir,
-        attachments_root=attachments_root,
-    )
+
+    # Never hash the live main database file while parsing a potentially
+    # different logical state from its WAL. SQLite backup produces one immutable
+    # logical snapshot; A1 both hashes and parses that exact snapshot.
+    with consistent_sqlite_snapshot(chat_db) as snapshot:
+        snapshot_hash = sha256_file(snapshot)
+        return _write_records(
+            IMessageParser(snapshot).iter_messages(),
+            source_path=chat_db,
+            source_type="imessage_chat_db",
+            parser_name=IMESSAGE_PARSER_NAME,
+            parser_version=IMESSAGE_PARSER_VERSION,
+            output_dir=output_dir,
+            attachments_root=attachments_root,
+            source_hash_override=snapshot_hash,
+            source_name_override=chat_db.name,
+            source_metadata={
+                "snapshot_method": "sqlite_online_backup_v1",
+                "snapshot_includes_committed_wal": True,
+            },
+        )
 
 
 def import_imazing_csv(
