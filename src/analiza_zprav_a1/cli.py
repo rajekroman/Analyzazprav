@@ -13,6 +13,7 @@ from .importer import (
     import_imessage,
 )
 from .reconciliation import reconcile_bundle
+from .schema_diff import compare_schema_files
 from .source_detection import detect_source
 
 
@@ -45,6 +46,18 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--source", required=True, type=Path)
     reconcile.add_argument("--output-dir", required=True, type=Path)
 
+    schema_diff = sub.add_parser(
+        "schema-diff",
+        help="Compare two A1 schema.json inventories without reading source row data",
+    )
+    schema_diff.add_argument("--before", required=True, type=Path)
+    schema_diff.add_argument("--after", required=True, type=Path)
+    schema_diff.add_argument(
+        "--fail-on-change",
+        action="store_true",
+        help="Return exit code 2 when a structural schema change is detected",
+    )
+
     imessage = sub.add_parser(
         "imessage",
         help="Extract Apple Messages chat.db into the A1 staging contract",
@@ -61,9 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     generic_csv = sub.add_parser(
         "csv",
-        help="Extract a headered generic message CSV into the A1 staging contract",
+        help="Extract a generic message CSV; use an explicit mapping profile for nonstandard/headerless sources",
     )
     generic_csv.add_argument("--csv", required=True, type=Path)
+    generic_csv.add_argument(
+        "--mapping-profile",
+        type=Path,
+        help="JSON profile declaring delimiter, header mode and exact canonical field mapping",
+    )
     _add_output_and_attachments(generic_csv)
 
     generic_json = sub.add_parser(
@@ -100,12 +118,22 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["ok"] else 2
 
+    if args.command == "schema-diff":
+        result = compare_schema_files(args.before, args.after)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 2 if args.fail_on_change and result["changed"] else 0
+
     if args.command == "imessage":
         stats = import_imessage(args.chat_db, args.output_dir, args.attachments_root)
     elif args.command == "imazing-csv":
         stats = import_imazing_csv(args.csv, args.output_dir, args.attachments_root)
     elif args.command == "csv":
-        stats = import_generic_csv(args.csv, args.output_dir, args.attachments_root)
+        stats = import_generic_csv(
+            args.csv,
+            args.output_dir,
+            args.attachments_root,
+            args.mapping_profile,
+        )
     elif args.command == "json":
         stats = import_generic_json(args.json, args.output_dir, args.attachments_root)
     elif args.command == "txt":

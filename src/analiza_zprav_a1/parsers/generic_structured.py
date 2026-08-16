@@ -5,8 +5,9 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
+from ..csv_mapping import CSVMappingProfile
 from ..models import AttachmentRecord, MessageRecord
 
 
@@ -27,7 +28,17 @@ ALIASES = {
 }
 
 
-def _lookup(mapping: dict[str, Any], field: str) -> tuple[Any, str | None]:
+def _lookup(
+    mapping: Mapping[str, Any],
+    field: str,
+    explicit_columns: Mapping[str, str] | None = None,
+) -> tuple[Any, str | None]:
+    if explicit_columns is not None:
+        column = explicit_columns.get(field)
+        if column is None:
+            return None, None
+        return mapping.get(column), column
+
     aliases = ALIASES[field]
     for key, value in mapping.items():
         if _norm(str(key)) in aliases:
@@ -103,16 +114,22 @@ def _attachment_records(value: Any, record_id: str) -> list[AttachmentRecord]:
     return out
 
 
-def record_from_mapping(mapping: dict[str, Any], *, ordinal: int, source_name: str) -> MessageRecord:
-    source_id_raw, source_id_col = _lookup(mapping, "id")
-    guid_raw, guid_col = _lookup(mapping, "guid")
-    conversation_raw, conversation_col = _lookup(mapping, "conversation")
-    sender_raw, sender_col = _lookup(mapping, "sender")
-    timestamp_raw, timestamp_col = _lookup(mapping, "timestamp")
-    text_raw, text_col = _lookup(mapping, "text")
-    service_raw, service_col = _lookup(mapping, "service")
-    direction_raw, direction_col = _lookup(mapping, "direction")
-    attachment_raw, attachment_col = _lookup(mapping, "attachment")
+def record_from_mapping(
+    mapping: dict[str, Any],
+    *,
+    ordinal: int,
+    source_name: str,
+    explicit_columns: Mapping[str, str] | None = None,
+) -> MessageRecord:
+    source_id_raw, source_id_col = _lookup(mapping, "id", explicit_columns)
+    guid_raw, guid_col = _lookup(mapping, "guid", explicit_columns)
+    conversation_raw, conversation_col = _lookup(mapping, "conversation", explicit_columns)
+    sender_raw, sender_col = _lookup(mapping, "sender", explicit_columns)
+    timestamp_raw, timestamp_col = _lookup(mapping, "timestamp", explicit_columns)
+    text_raw, text_col = _lookup(mapping, "text", explicit_columns)
+    service_raw, service_col = _lookup(mapping, "service", explicit_columns)
+    direction_raw, direction_col = _lookup(mapping, "direction", explicit_columns)
+    attachment_raw, attachment_col = _lookup(mapping, "attachment", explicit_columns)
 
     source_id = str(source_id_raw) if source_id_raw not in (None, "") else f"item:{ordinal}"
     source_guid = str(guid_raw) if guid_raw not in (None, "") else None
@@ -159,22 +176,90 @@ def _sniff(sample: str) -> csv.Dialect:
         return csv.excel
 
 
+def _reject_duplicate_headers(fieldnames: list[str]) -> None:
+    if len(fieldnames) != len(set(fieldnames)):
+        duplicates = sorted({name for name in fieldnames if fieldnames.count(name) > 1})
+        raise ValueError(f"CSV contains duplicate header names: {duplicates!r}")
+
+
 class GenericCSVParser:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, mapping_profile: CSVMappingProfile | None = None):
         self.path = path
+        self.mapping_profile = mapping_profile
+
+    def _iter_profiled(self, stream: Any) -> Iterator[MessageRecord]:
+        assert self.mapping_profile is not None
+        profile = self.mapping_profile
+        reader = csv.reader(stream, delimiter=profile.delimiter)
+
+        if profile.has_header:
+            try:
+                header = next(reader)
+            except StopIteration as exc:
+                raise ValueError("CSV mapping profile declares a header but the source is empty") from exc
+            _reject_duplicate_headers(header)
+            source_columns: dict[str, str] = {}
+            for field, selector in profile.fields.items():
+                assert isinstance(selector, str)
+                if selector not in header:
+                    raise ValueError(
+                        f"CSV mapping profile field {field!r} references missing header {selector!r}"
+                    )
+                source_columns[field] = selector
+
+            for row_number, values in enumerate(reader, start=2):
+                if len(values) != len(header):
+                    raise ValueError(
+                        f"CSV row {row_number} has {len(values)} columns; header defines {len(header)}"
+                    )
+                row = {header[index]: value for index, value in enumerate(values)}
+                yield record_from_mapping(
+                    row,
+                    ordinal=row_number,
+                    source_name=self.path.stem,
+                    explicit_columns=source_columns,
+                )
+            return
+
+        max_index = max(int(selector) for selector in profile.fields.values())
+        source_columns = {
+            field: f"column:{int(selector)}" for field, selector in profile.fields.items()
+        }
+        for row_number, values in enumerate(reader, start=1):
+            if len(values) <= max_index:
+                raise ValueError(
+                    f"CSV row {row_number} has {len(values)} columns; mapping requires index {max_index}"
+                )
+            row = {f"column:{index}": value for index, value in enumerate(values)}
+            yield record_from_mapping(
+                row,
+                ordinal=row_number,
+                source_name=self.path.stem,
+                explicit_columns=source_columns,
+            )
 
     def iter_messages(self) -> Iterator[MessageRecord]:
         with self.path.open("r", encoding="utf-8-sig", newline="") as stream:
+            if self.mapping_profile is not None:
+                yield from self._iter_profiled(stream)
+                return
+
             sample = stream.read(8192)
             stream.seek(0)
             reader = csv.DictReader(stream, dialect=_sniff(sample))
             if not reader.fieldnames:
                 raise ValueError("CSV has no header row")
-            normalized = {_norm(name) for name in reader.fieldnames if name}
+            fieldnames = [str(name) for name in reader.fieldnames]
+            _reject_duplicate_headers(fieldnames)
+            normalized = {_norm(name) for name in fieldnames if name}
             if not normalized.intersection(ALIASES["text"] | ALIASES["timestamp"] | ALIASES["sender"]):
                 raise ValueError("CSV headers do not contain a supported message field")
             for row_number, source_row in enumerate(reader, start=2):
-                row = {str(k): "" if v is None else v for k, v in source_row.items() if k is not None}
+                if None in source_row:
+                    raise ValueError(
+                        f"CSV row {row_number} contains more fields than the header; refusing silent truncation"
+                    )
+                row = {str(k): "" if v is None else v for k, v in source_row.items()}
                 yield record_from_mapping(row, ordinal=row_number, source_name=self.path.stem)
 
 
