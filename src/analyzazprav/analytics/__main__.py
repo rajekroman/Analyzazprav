@@ -7,7 +7,7 @@ import sqlite3
 
 from .adapter import analyze_database, analyze_incremental_database
 from .config import AnalyticsConfig
-from .store_v7 import AnalyticsStore
+from .store_v8 import AnalyticsStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     "topic_evidence_count": sum(
                         len(item.topic_evidence) for item in results
+                    ),
+                    "topic_marker_evidence_count": sum(
+                        len(item.topic_marker_evidence) for item in results
                     ),
                 },
                 sort_keys=True,
