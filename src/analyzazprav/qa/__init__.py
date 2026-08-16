@@ -1,3 +1,4 @@
+from .a5_evidence import validate_a5_evidence_chain
 from .analytics_validator import validate_analytics_result
 from .participant_resolution import validate_participant_resolution
 from .reconciliation import validate_staging_bundle
@@ -13,5 +14,6 @@ __all__ = [
     "validate_vertical_pipeline",
     "validate_participant_resolution",
     "validate_analytics_result",
+    "validate_a5_evidence_chain",
     "canonical_fingerprint",
 ]
