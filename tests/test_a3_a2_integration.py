@@ -28,6 +28,15 @@ class A3RealA2ContractTests(unittest.TestCase):
         self.db.close()
         self.tmp.cleanup()
 
+    def _table_exists(self, name: str) -> bool:
+        return (
+            self.db.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
+
     def test_real_a2_database_flows_through_a3_without_source_mutation(self):
         run = self.db.begin_import(source_type="fixture", source_fingerprint="a3-real-a2")
         alice = self.db.get_or_create_participant(
@@ -113,17 +122,23 @@ class A3RealA2ContractTests(unittest.TestCase):
         self.db.add_relation(second, first, "reply", {"origin": "fixture"})
         self.db.finish_import(run.id)
 
+        # A3 v5 supports both the current A2 contract and the newer membership-
+        # aware A2 contract. Reconciliation must therefore include only source
+        # tables that actually exist in the A2 version under test.
+        candidate_tables = (
+            "participant",
+            "participant_identity",
+            "message",
+            "message_source",
+            "message_conversation",
+            "attachment",
+            "message_attachment",
+            "message_attachment_occurrence",
+        )
+        source_tables = tuple(table for table in candidate_tables if self._table_exists(table))
         before = {
             table: self.db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in (
-                "participant",
-                "participant_identity",
-                "message",
-                "message_source",
-                "message_conversation",
-                "attachment",
-                "message_attachment_occurrence",
-            )
+            for table in source_tables
         }
 
         projection = load_a2_projection(self.db.conn)
@@ -135,7 +150,10 @@ class A3RealA2ContractTests(unittest.TestCase):
         by_id = {message.message_id: message for message in result.messages}
 
         self.assertEqual(len(result.messages), 2)
-        self.assertTrue(all(message.membership_id is not None for message in result.messages))
+        if self._table_exists("message_conversation"):
+            self.assertTrue(all(message.membership_id is not None for message in result.messages))
+        else:
+            self.assertTrue(all(message.membership_id is None for message in result.messages))
         self.assertEqual(len(result.threads), 1)
         self.assertEqual(result.threads[0].message_ids, (first, second))
         self.assertEqual(by_id[first].features.image_count, 1)
@@ -162,7 +180,7 @@ class A3RealA2ContractTests(unittest.TestCase):
         )
         after = {
             table: self.db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in before
+            for table in source_tables
         }
         self.assertEqual(before, after)
         report = self.db.integrity_report()
