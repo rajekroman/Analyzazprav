@@ -6,6 +6,7 @@ from typing import Iterable
 
 import pandas as pd
 
+from .a4_integrity import require_reconciled
 from .data import DataSourceError, _connect_read_only, _objects, normalize_frame
 
 
@@ -37,7 +38,10 @@ def _parse_message_ids(value: object, source: str) -> tuple[str, ...]:
             raise DataSourceError(f"Neplatná evidence v {source}: source_message_ids_json není validní JSON.") from exc
     if not isinstance(parsed, list):
         raise DataSourceError(f"Neplatná evidence v {source}: source_message_ids_json musí být pole.")
-    return tuple(str(item) for item in parsed)
+    ids = tuple(str(item) for item in parsed)
+    if len(set(ids)) != len(ids):
+        raise DataSourceError(f"Neplatná evidence v {source}: source_message_ids_json obsahuje duplicitní ID.")
+    return ids
 
 
 def _as_utc(value: object) -> pd.Timestamp:
@@ -53,12 +57,12 @@ def _us_as_utc(value: object) -> pd.Timestamp:
 
 
 def load_a4_findings(path: str | Path) -> pd.DataFrame:
-    """Load auditable A4 latest-run findings without mutating the database.
+    """Load auditable, reconciled A4 latest-run findings read-only.
 
-    The adapter intentionally consumes only A4's published latest-run views.
-    Missing A4 views mean "analytics not available yet" and return an empty
-    frame. Malformed evidence JSON fails closed instead of silently dropping
-    source-message references.
+    Missing A4 views mean analytics are not available yet. Malformed or
+    duplicate evidence fails closed. Once A4 publishes
+    ``analysis_a4_reconciliation``, every conversation represented by a loaded
+    finding must have ``reconciliation_ok=1``.
     """
 
     rows: list[dict[str, object]] = []
@@ -144,6 +148,13 @@ def load_a4_findings(path: str | Path) -> pd.DataFrame:
                             "regime_type": row.regime_type,
                         }, ensure_ascii=False, sort_keys=True),
                     })
+
+            if rows:
+                require_reconciled(
+                    conn,
+                    [str(row["conversation_id"]) for row in rows],
+                    context="nálezy",
+                )
     except (DataSourceError, ValueError):
         raise
     except Exception as exc:
