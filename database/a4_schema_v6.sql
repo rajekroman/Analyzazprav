@@ -55,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_a4_topic_evidence_participant_date
         conversation_id, participant_id, period_date, analytics_run_id
     );
 
+DROP VIEW IF EXISTS analysis_a4_topic_period_reconciliation;
+DROP VIEW IF EXISTS analysis_a4_topic_periods;
 DROP VIEW IF EXISTS analysis_a4_topics;
 DROP VIEW IF EXISTS analysis_a4_topic_evidence;
 
@@ -71,3 +73,101 @@ FROM analytics_topic_evidence AS e
 JOIN analysis_a4_latest_conversation_run AS r
   ON r.conversation_id = e.conversation_id
  AND r.analytics_run_id = e.analytics_run_id;
+
+-- Sparse topic intensity view: one row exists only when the topic has dated
+-- evidence in the period. A6 may render absent rows as zero inside a selected
+-- timeline, but the stored evidence remains the authority. Local and UTC
+-- evidence are kept separate by date_basis.
+CREATE VIEW analysis_a4_topic_periods AS
+WITH dated_evidence AS (
+    SELECT e.analytics_run_id,
+           e.conversation_id,
+           e.topic_key,
+           e.message_id,
+           e.participant_id,
+           e.period_date,
+           e.date_basis,
+           e.occurrence_count,
+           t.normalized_phrase,
+           t.method
+    FROM analysis_a4_topic_evidence AS e
+    JOIN analysis_a4_topics AS t
+      ON t.analytics_run_id = e.analytics_run_id
+     AND t.conversation_id = e.conversation_id
+     AND t.topic_key = e.topic_key
+    WHERE e.period_date IS NOT NULL
+), expanded AS (
+    SELECT d.*,
+           'week' AS period_kind,
+           date(
+               d.period_date,
+               '-' || ((CAST(strftime('%w', d.period_date) AS INTEGER) + 6) % 7) || ' days'
+           ) AS period_start,
+           date(
+               d.period_date,
+               '-' || ((CAST(strftime('%w', d.period_date) AS INTEGER) + 6) % 7) || ' days',
+               '+6 days'
+           ) AS period_end
+    FROM dated_evidence AS d
+    UNION ALL
+    SELECT d.*,
+           'month' AS period_kind,
+           date(d.period_date, 'start of month') AS period_start,
+           date(d.period_date, 'start of month', '+1 month', '-1 day') AS period_end
+    FROM dated_evidence AS d
+)
+SELECT x.analytics_run_id,
+       x.conversation_id,
+       x.topic_key,
+       x.normalized_phrase,
+       x.method,
+       x.participant_id,
+       x.date_basis,
+       x.period_kind,
+       x.period_start,
+       x.period_end,
+       COUNT(DISTINCT x.message_id) AS topic_message_count,
+       SUM(x.occurrence_count) AS occurrence_count,
+       p.message_count AS participant_period_message_count,
+       CASE
+           WHEN p.message_count > 0 THEN
+               ROUND(CAST(COUNT(DISTINCT x.message_id) AS REAL) / p.message_count, 6)
+           ELSE NULL
+       END AS topic_message_share
+FROM expanded AS x
+LEFT JOIN analysis_a4_periods AS p
+  ON p.analytics_run_id = x.analytics_run_id
+ AND p.conversation_id = x.conversation_id
+ AND p.participant_id = x.participant_id
+ AND p.date_basis = x.date_basis
+ AND p.period_kind = x.period_kind
+ AND p.period_start = x.period_start
+GROUP BY x.analytics_run_id,
+         x.conversation_id,
+         x.topic_key,
+         x.normalized_phrase,
+         x.method,
+         x.participant_id,
+         x.date_basis,
+         x.period_kind,
+         x.period_start,
+         x.period_end,
+         p.message_count;
+
+-- Explicit accounting for evidence that cannot participate in a time/participant
+-- projection. Nothing is dropped: all rows remain queryable in
+-- analysis_a4_topic_evidence.
+CREATE VIEW analysis_a4_topic_period_reconciliation AS
+SELECT e.analytics_run_id,
+       e.conversation_id,
+       COUNT(*) AS evidence_row_count,
+       COUNT(DISTINCT e.topic_key) AS topic_count,
+       COUNT(DISTINCT e.message_id) AS evidence_message_count,
+       SUM(CASE WHEN e.period_date IS NOT NULL THEN 1 ELSE 0 END)
+           AS dated_evidence_row_count,
+       SUM(CASE WHEN e.period_date IS NULL THEN 1 ELSE 0 END)
+           AS undated_evidence_row_count,
+       SUM(CASE WHEN e.participant_id IS NULL THEN 1 ELSE 0 END)
+           AS unknown_participant_evidence_row_count
+FROM analysis_a4_topic_evidence AS e
+GROUP BY e.analytics_run_id, e.conversation_id;
