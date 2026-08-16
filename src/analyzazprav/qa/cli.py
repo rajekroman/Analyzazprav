@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .a4_current import validate_a4_metrics
 from .participant_resolution import validate_participant_resolution
 from .reconciliation import validate_staging_bundle
 from .staging import STATUS_FAIL
@@ -19,8 +20,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="az-qa",
         description=(
-            "Validate Analýza zpráv staging, the A1→A2→A3 vertical data path, "
-            "and auditable A3 participant resolution."
+            "Validate staging, the A1→A2→A3 data path, A3 participant resolution, "
+            "and deterministic A4 analytics."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -47,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     participants_parser.add_argument("--database", type=Path, required=True)
 
+    analytics_parser = sub.add_parser(
+        "analytics",
+        help="Independently recompute release-critical A4 metrics from A2/A3 resolved identities.",
+    )
+    analytics_parser.add_argument("--database", type=Path, required=True)
+
     args = parser.parse_args(argv)
     if args.command == "staging":
         return _emit(validate_staging_bundle(args.staging))
@@ -54,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         return _emit(validate_vertical_pipeline(args.staging, args.database))
     if args.command == "participants":
         return _emit(validate_participant_resolution(args.database))
+    if args.command == "analytics":
+        return _emit(validate_a4_metrics(args.database))
     parser.error(f"unsupported command: {args.command}")
     return 2
 
