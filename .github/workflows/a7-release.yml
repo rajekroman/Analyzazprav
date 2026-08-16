@@ -59,7 +59,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Run current-checkout A5 evidence/provenance probe
         run: >-
-          python tools/a7_release/a5_live.py
+          python -m tools.a7_release.a5_live
           --report a7-a5-report.json
           --contract-sha "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
@@ -79,7 +79,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - name: Run current-checkout A2→A6→A5 provenance fixture
         run: >-
-          python tools/a7_release/a6_live.py
+          python -m tools.a7_release.a6_live
           --report a7-a6-report.json
           --contract-sha "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
@@ -107,7 +107,7 @@ jobs:
           merge-multiple: true
       - name: Aggregate exact-SHA verdict
         run: >-
-          python tools/a7_release/release_verdict.py
+          python -m tools.a7_release.release_verdict
           --reports a7-reports
           --report a7-release-verdict.json
           --sha "$GITHUB_SHA"
