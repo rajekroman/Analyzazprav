@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .importer import import_generic_csv, import_generic_json, import_imazing_csv, import_imessage
+from .importer import import_generic_csv, import_generic_json, import_generic_text, import_imazing_csv, import_imessage
 
 
 def _add_output_and_attachments(parser: argparse.ArgumentParser) -> None:
@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     generic_json = sub.add_parser("json", help="Extract generic JSON/JSONL message records into the A1 staging contract")
     generic_json.add_argument("--json", required=True, type=Path)
     _add_output_and_attachments(generic_json)
+
+    generic_txt = sub.add_parser("txt", help="Import plain text with an explicit record boundary mode")
+    generic_txt.add_argument("--txt", required=True, type=Path)
+    generic_txt.add_argument("--mode", required=True, choices=("line", "block", "whole"))
+    generic_txt.add_argument("--output-dir", required=True, type=Path)
     return parser
 
 
@@ -49,6 +54,8 @@ def main() -> int:
         stats = import_generic_csv(args.csv, args.output_dir, args.attachments_root)
     elif args.command == "json":
         stats = import_generic_json(args.json, args.output_dir, args.attachments_root)
+    elif args.command == "txt":
+        stats = import_generic_text(args.txt, args.output_dir, args.mode)
     else:
         return 1
     print(json.dumps(asdict(stats), ensure_ascii=False, indent=2))
