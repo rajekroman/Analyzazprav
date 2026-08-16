@@ -14,6 +14,9 @@ from a6.provenance import load_message_sources
 from tools.a7_downstream.common import load_downstream_validator, write_report
 
 
+CONTRACT_SHA = "f54c2807176515f509af50f340ea8f60a1ff7aea"
+
+
 def _message(
     *,
     run_id: int,
@@ -248,7 +251,7 @@ def main() -> int:
             actual_attachment_sources=actual_attachment_sources,
             renderer_source=renderer_source,
         )
-        report["contract_sha"] = "59028e1c9d93718105051de23db3329e5ebe0c0a"
+        report["contract_sha"] = CONTRACT_SHA
         report["checks"].update(
             {
                 "canonical_message_count": int(frame["message_id"].nunique()),
