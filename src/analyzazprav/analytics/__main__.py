@@ -5,14 +5,15 @@ import json
 from pathlib import Path
 import sqlite3
 
-from .adapter import analyze_database, analyze_incremental_database
+from .adapter import analyze_database
 from .config import AnalyticsConfig
+from .incremental import analyze_incremental_database
 from .store_v7 import AnalyticsStore
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m analyzazprav.analytics",
+        prog="az-analyze",
         description="Run deterministic A4 analytics over an A2/A3 SQLite database.",
     )
     parser.add_argument("database", type=Path, help="Path to the project SQLite database")
@@ -53,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
                     "status": "completed",
                     "analytics_run_id": run_id,
                     "conversation_count": len(results),
-                    "message_count": sum(item.source_message_count for item in results),
+                    "membership_count": sum(item.source_message_count for item in results),
                     "change_point_count": sum(len(item.change_points) for item in results),
                     "regime_count": sum(len(item.dyadic_regimes) for item in results),
                     "trend_count": sum(len(item.trend_summaries) for item in results),
