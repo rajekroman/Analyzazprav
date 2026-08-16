@@ -28,7 +28,7 @@ def _is_semantic_char(char: str) -> bool:
 
 
 def _clean_candidate(value: str) -> str | None:
-    candidate = value.strip("\x00 \t\r\n")
+    candidate = value.strip("\ufeff\x00 \t\r\n")
     if not candidate:
         return None
     lowered = candidate.lower()
@@ -73,9 +73,6 @@ def _utf16_is_plausible(data: bytes, encoding: str) -> bool:
     if encoding == "utf-16-be" and data.startswith(b"\xfe\xff"):
         return True
 
-    pairs = len(data) // 2
-    if pairs == 0:
-        return False
     sample = data[: min(len(data) - (len(data) % 2), 8192)]
     if not sample:
         return False
@@ -83,7 +80,12 @@ def _utf16_is_plausible(data: bytes, encoding: str) -> bool:
         zero_positions = sample[1::2]
     else:
         zero_positions = sample[0::2]
-    return sum(byte == 0 for byte in zero_positions) / max(1, len(zero_positions)) >= 0.15
+
+    # Without a BOM, require a strong byte-alignment signal. A permissive gate
+    # can turn punctuation/binary bytes into accidental Unicode symbols and thus
+    # manufacture message text. This intentionally favors false negatives over
+    # false positives; the original BLOB remains available for future decoders.
+    return sum(byte == 0 for byte in zero_positions) / max(1, len(zero_positions)) >= 0.40
 
 
 def _candidate_score(value: str, encoding: str) -> tuple[int, int, int, int]:
