@@ -104,14 +104,15 @@ class A2StagingTests(unittest.TestCase):
                 (1, "001_initial.sql"),
                 (2, "002_a1_staging_contract.sql"),
                 (3, "003_source_content_hash.sql"),
+                (4, "004_explicit_local_time.sql"),
             ],
         )
         version = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()["value"]
-        self.assertEqual(version, "3")
+        self.assertEqual(version, "4")
 
-    def test_v1_database_upgrades_to_v3_without_data_loss(self):
+    def test_v1_database_upgrades_to_current_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite"
         conn = sqlite3.connect(legacy_path)
         conn.executescript((ROOT / "database" / "migrations" / "001_initial.sql").read_text(encoding="utf-8"))
@@ -149,12 +150,17 @@ class A2StagingTests(unittest.TestCase):
             message_source_columns = {
                 row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message_source)")
             }
+            message_columns = {
+                row["name"] for row in upgraded.conn.execute("PRAGMA table_info(message)")
+            }
             import_columns = {
                 row["name"] for row in upgraded.conn.execute("PRAGMA table_info(import_run)")
             }
             self.assertIn("source_record_key", message_source_columns)
             self.assertIn("source_contract_version", message_source_columns)
             self.assertIn("source_sha256", import_columns)
+            self.assertIn("sent_at_local_iso", message_columns)
+            self.assertIn("timezone_name", message_columns)
             self.assertIsNone(
                 upgraded.conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='duplicate_candidate'"
@@ -169,12 +175,12 @@ class A2StagingTests(unittest.TestCase):
             rows = upgraded.conn.execute(
                 "SELECT version FROM schema_migration ORDER BY version"
             ).fetchall()
-            self.assertEqual([row["version"] for row in rows], [1, 2, 3])
+            self.assertEqual([row["version"] for row in rows], [1, 2, 3, 4])
             self.assertEqual(
                 upgraded.conn.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()["value"],
-                "3",
+                "4",
             )
             report = upgraded.integrity_report()
             self.assertEqual(report["integrity"], "ok")
@@ -193,9 +199,14 @@ class A2StagingTests(unittest.TestCase):
             "missing",
         )
         msg = self.db.conn.execute(
-            "SELECT timestamp_precision, timestamp_quality FROM message WHERE canonical_guid='GUID-A'"
+            """SELECT timestamp_precision, timestamp_quality,
+                      sent_at_local_iso, timezone_name, timezone_offset_min
+               FROM message WHERE canonical_guid='GUID-A'"""
         ).fetchone()
         self.assertEqual((msg["timestamp_precision"], msg["timestamp_quality"]), ("microsecond", "converted"))
+        self.assertIsNone(msg["sent_at_local_iso"])
+        self.assertIsNone(msg["timezone_name"])
+        self.assertIsNone(msg["timezone_offset_min"])
         source = self.db.conn.execute(
             "SELECT source_record_key, source_contract_version, metadata_json FROM message_source WHERE source_message_id='101'"
         ).fetchone()
