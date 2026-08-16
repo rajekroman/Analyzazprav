@@ -44,7 +44,7 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
                 CREATE VIEW analysis_a4_topics AS SELECT * FROM topic_src;
             """)
             conn.execute(
-                "INSERT INTO event_src VALUES (7,3,'conflict',0.8,1000000,3000000,?,?)",
+                "INSERT INTO event_src VALUES (7,3,'conflict_candidate',0.8,1000000,3000000,?,?)",
                 ('{"negative":0.7}', '[10,11]'),
             )
             conn.execute(
@@ -66,6 +66,20 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
         self.assertEqual(by_type["change_point"].metrics_during["robust_z_score"], 3.1)
         self.assertEqual(by_type["lexical_topic"].metadata["method"], "lexical_ngram_v1")
         self.assertEqual(by_type["lexical_topic"].metadata["normalized_phrase"], "meeting")
+
+    def test_historical_conflict_label_remains_readable(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE event_src SET event_type='conflict' WHERE session_id=3")
+        candidates = A4SQLiteCandidateSource(db).conflicts("7")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].candidate_type, "conflict")
+
+    def test_unrelated_a4_event_type_is_not_promoted_to_conflict(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE event_src SET event_type='other_event' WHERE session_id=3")
+        self.assertEqual(A4SQLiteCandidateSource(db).conflicts("7"), ())
 
     def test_missing_optional_views_return_no_candidates_for_that_type(self):
         source = A4SQLiteCandidateSource(self.make_db())
