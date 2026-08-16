@@ -3,26 +3,39 @@ name: A5 tests
 on:
   pull_request:
     paths:
+      - "database/a4_schema*.sql"
+      - "src/analyzazprav/analytics/**"
       - "src/analyzazprav/a5_ai/**"
-      - "tests/a5_ai/**"
+      - "tests/**"
       - ".github/workflows/a5-tests.yml"
   push:
     branches:
-      - "agent/a5-ai-analysis"
+      - "agent/a0-a5-integration"
     paths:
+      - "database/a4_schema*.sql"
+      - "src/analyzazprav/analytics/**"
       - "src/analyzazprav/a5_ai/**"
-      - "tests/a5_ai/**"
+      - "tests/**"
       - ".github/workflows/a5-tests.yml"
 
 jobs:
-  test:
+  vertical-ai-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Run A5 unit and integration tests
-        run: python -m unittest discover -s tests/a5_ai -p 'test_*.py' -v
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e . pytest
+      - name: Verify existing pipeline CLI entry points
+        run: |
+          az-import --help
+          az-normalize --help
+          az-process --help
+          az-analyze --help
+          az-qa --help
       - name: Compile A5 package
         run: python -m compileall -q src/analyzazprav/a5_ai tests/a5_ai
+      - name: Run full A1+A2+A3+A4+A5+A7 regression suite
+        run: python -m pytest -q
