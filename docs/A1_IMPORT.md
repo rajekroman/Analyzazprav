@@ -8,6 +8,7 @@ Aktuální funkční slice podporuje:
 - iMazing Messages CSV s hlavičkou;
 - obecné message CSV s hlavičkou;
 - JSON a JSONL message exporty;
+- TXT s explicitní hranicí recordu (`line`, `block`, `whole`);
 - resolver skutečných souborů příloh + SHA-256;
 - source participant membership a metadata Apple konverzací;
 - auditní evidenci neemitovaných recordů přes `errors.jsonl`.
@@ -27,6 +28,7 @@ Aktuální funkční slice podporuje:
 - celý původní CSV/JSON record zůstává v `raw_payload` pro audit A7;
 - datum s explicitním timezone offsetem se převádí do UTC; lokální datum bez offsetu zůstává raw a není falešně označeno jako UTC;
 - neznámý numerický timestamp se automaticky nepřevádí, protože bez znalosti epochy/jednotky by šlo o neauditovatelný odhad;
+- generic TXT nikdy nehádá sendera ani timestamp a hranice recordu je povinně deklarována uživatelem;
 - manifest rozlišuje `messages_seen` a `messages_emitted`; serializační chyba se zapíše do `errors.jsonl` se source identifikací a typem chyby;
 - vše běží lokálně, bez cloudu, externího API a AI.
 
@@ -96,6 +98,23 @@ Podporované vstupní tvary:
 
 Nested attachment objekt může obsahovat `path`/`filename`/`file`/`name`, MIME typ a velikost; celý objekt se zároveň zachová jako raw metadata.
 
+## TXT
+
+```bash
+az-import txt \
+  --txt ./export/messages.txt \
+  --mode block \
+  --output-dir ./staging/txt
+```
+
+`--mode` je povinný:
+
+- `line` — každý neprázdný řádek je jeden staging record;
+- `block` — bloky oddělené prázdným řádkem jsou staging records;
+- `whole` — celý soubor je jediný staging record.
+
+TXT fallback záměrně neinterpretuje sendera ani datum. Pokud je potřeba strukturovaný TXT export konkrétní aplikace, musí mít vlastní explicitní parser/profile.
+
 ## Attachment status
 
 - `resolved` — soubor existuje, byl spočítán SHA-256 a skutečná velikost;
@@ -104,8 +123,7 @@ Nested attachment objekt může obsahovat `path`/`filename`/`file`/`name`, MIME 
 
 ## Další A1 slice
 
-1. TXT import s explicitním profilem/bez hádání message boundaries;
-2. reactions/Tapbacks a edit history;
-3. robustnější `attributedBody` decoder;
-4. explicitní mapping profil pro nestandardní/headerless CSV;
-5. validační report A1 → A7.
+1. reactions/Tapbacks a edit history;
+2. robustnější `attributedBody` decoder;
+3. explicitní mapping profil pro nestandardní/headerless CSV;
+4. validační report A1 → A7.
