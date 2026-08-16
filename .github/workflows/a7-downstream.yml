@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/analyzazprav/qa/**'
       - 'tests/test_a7_downstream.py'
+      - 'tests/test_a7_release_provenance.py'
       - 'tools/a7_downstream/**'
       - 'docs/A7_QA.md'
       - '.github/workflows/a7-downstream.yml'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'src/analyzazprav/qa/**'
       - 'tests/test_a7_downstream.py'
+      - 'tests/test_a7_release_provenance.py'
       - 'tools/a7_downstream/**'
       - 'docs/A7_QA.md'
       - '.github/workflows/a7-downstream.yml'
@@ -32,7 +34,10 @@ jobs:
       - name: Run integrated A1-A4 plus authoritative A7 oracle/regression suite
         run: python -m pytest -q
       - name: Write integrated core report
-        run: printf '%s\n' '{"schema_version":1,"module":"core","status":"PASS","verdict":"VALID","scope":"integrated A1-A4 plus authoritative A7 tests on current branch"}' > a7-core-report.json
+        run: >-
+          printf '%s\n'
+          '{"schema_version":1,"module":"core","status":"PASS","verdict":"VALID","contract_sha":"${{ github.sha }}","scope":"integrated A1-A4 plus authoritative A7 tests on current branch"}'
+          > a7-core-report.json
       - name: Upload core report
         uses: actions/upload-artifact@v4
         with:
@@ -117,6 +122,9 @@ jobs:
           --core-result '${{ needs.core-a7.result }}'
           --a5-result '${{ needs.a5-live.result }}'
           --a6-result '${{ needs.a6-live.result }}'
+          --core-sha '${{ github.sha }}'
+          --a5-sha 'c1c5a0e9d5ec1933370054404bf3612f53f5a63e'
+          --a6-sha 'f54c2807176515f509af50f340ea8f60a1ff7aea'
       - name: Upload release verdict
         if: always()
         uses: actions/upload-artifact@v4
