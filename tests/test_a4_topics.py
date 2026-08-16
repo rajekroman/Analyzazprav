@@ -198,7 +198,7 @@ class TopicAnalyticsTests(unittest.TestCase):
             conn.execute(
                 "SELECT analytics_version FROM analytics_run WHERE id = 1"
             ).fetchone(),
-            ("6",),
+            ("8",),
         )
         topic = conn.execute(
             """SELECT normalized_phrase, document_frequency
