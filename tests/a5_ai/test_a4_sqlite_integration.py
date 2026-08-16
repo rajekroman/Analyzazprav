@@ -19,6 +19,12 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
         db = Path(tmp.name) / "a4.sqlite3"
         with sqlite3.connect(db) as conn:
             conn.executescript("""
+                CREATE TABLE reconciliation_src (
+                    conversation_id INTEGER,
+                    reconciliation_ok INTEGER NOT NULL
+                );
+                CREATE VIEW analysis_a4_reconciliation AS SELECT * FROM reconciliation_src;
+
                 CREATE TABLE event_src (
                     conversation_id INTEGER, session_id INTEGER, event_type TEXT, score REAL,
                     start_at_utc_us INTEGER, end_at_utc_us INTEGER,
@@ -43,6 +49,7 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
                 );
                 CREATE VIEW analysis_a4_topics AS SELECT * FROM topic_src;
             """)
+            conn.execute("INSERT INTO reconciliation_src VALUES (7,1)")
             conn.execute(
                 "INSERT INTO event_src VALUES (7,3,'conflict_candidate',0.8,1000000,3000000,?,?)",
                 ('{"negative":0.7}', '[10,11]'),
@@ -66,6 +73,20 @@ class A4SQLiteCandidateSourceTests(unittest.TestCase):
         self.assertEqual(by_type["change_point"].metrics_during["robust_z_score"], 3.1)
         self.assertEqual(by_type["lexical_topic"].metadata["method"], "lexical_ngram_v1")
         self.assertEqual(by_type["lexical_topic"].metadata["normalized_phrase"], "meeting")
+
+    def test_failed_reconciliation_blocks_candidate_use(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE reconciliation_src SET reconciliation_ok=0 WHERE conversation_id=7")
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).conflicts("7")
+
+    def test_missing_reconciliation_row_blocks_candidate_use(self):
+        db = self.make_db()
+        with sqlite3.connect(db) as conn:
+            conn.execute("DELETE FROM reconciliation_src WHERE conversation_id=7")
+        with self.assertRaises(A4SQLiteSourceError):
+            A4SQLiteCandidateSource(db).conflicts("7")
 
     def test_historical_conflict_label_remains_readable(self):
         db = self.make_db()
