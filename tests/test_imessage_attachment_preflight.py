@@ -54,6 +54,9 @@ def test_reserved_attachment_provenance_column_fails_before_staging_write(tmp_pa
     conn.execute(
         f'CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, "{escaped}" TEXT)'
     )
+    conn.execute(
+        "CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER)"
+    )
     conn.commit()
     conn.close()
 
