@@ -20,8 +20,36 @@ class ProcessingStore:
     def _default_schema_path() -> Path:
         return Path(__file__).resolve().parents[3] / "database" / "a3_schema.sql"
 
+    _CURRENT_PROCESSED_COLUMNS = frozenset({
+        "attachment_count", "image_count", "gif_count", "video_count", "audio_count",
+        "document_count", "other_media_count", "missing_attachment_count",
+        "utc_year", "utc_month", "utc_day", "utc_weekday", "utc_hour",
+        "local_year", "local_month", "local_day", "local_weekday", "local_hour",
+    })
+
     def initialize(self) -> None:
+        existing = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='processed_message'"
+        ).fetchone()
+        if existing is not None:
+            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(processed_message)")}
+            if not self._CURRENT_PROCESSED_COLUMNS.issubset(columns):
+                self._drop_derived_schema()
         self.conn.executescript(self.schema_path.read_text(encoding="utf-8"))
+
+    def _drop_derived_schema(self) -> None:
+        """Drop only rebuildable A3 tables when an older draft schema is detected."""
+        with self.conn:
+            for table in (
+                "processed_message",
+                "a3_duplicate_candidate",
+                "conversation_thread_message",
+                "conversation_thread",
+                "conversation_session",
+                "sender_run",
+                "processing_run",
+            ):
+                self.conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def replace_all(self, result: ProcessingResult, config: ProcessingConfig) -> int:
         now_us = time.time_ns() // 1_000
@@ -91,15 +119,25 @@ class ProcessingStore:
                     for position, message_id in enumerate(t.message_ids, start=1)
                 ],
             )
+
+            columns = (
+                "message_id", "processing_run_id", "sequence_number", "text_clean",
+                "sender_run_id", "session_id", "thread_id",
+                "char_count", "word_count", "line_count", "emoji_count",
+                "question_mark_count", "exclamation_mark_count", "uppercase_ratio",
+                "has_question", "has_url", "has_attachment", "attachment_count",
+                "image_count", "gif_count", "video_count", "audio_count", "document_count",
+                "other_media_count", "missing_attachment_count",
+                "seconds_since_previous_message", "seconds_since_previous_other_sender",
+                "utc_year", "utc_month", "utc_day", "utc_weekday", "utc_hour",
+                "local_year", "local_month", "local_day", "local_weekday", "local_hour",
+            )
+            insert_sql = (
+                f"INSERT INTO processed_message({','.join(columns)}) "
+                f"VALUES ({','.join('?' for _ in columns)})"
+            )
             self.conn.executemany(
-                """INSERT INTO processed_message(
-                       message_id, processing_run_id, sequence_number, text_clean,
-                       sender_run_id, session_id, thread_id,
-                       char_count, word_count, line_count, emoji_count,
-                       question_mark_count, exclamation_mark_count, uppercase_ratio,
-                       has_question, has_url, has_attachment,
-                       seconds_since_previous_message, seconds_since_previous_other_sender
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                insert_sql,
                 [
                     (
                         m.message_id, run_id, m.sequence_number, m.text_clean,
@@ -108,8 +146,16 @@ class ProcessingStore:
                         m.features.emoji_count, m.features.question_mark_count,
                         m.features.exclamation_mark_count, m.features.uppercase_ratio,
                         int(m.features.has_question), int(m.features.has_url),
-                        int(m.features.has_attachment), m.features.seconds_since_previous_message,
+                        int(m.features.has_attachment), m.features.attachment_count,
+                        m.features.image_count, m.features.gif_count, m.features.video_count,
+                        m.features.audio_count, m.features.document_count,
+                        m.features.other_media_count, m.features.missing_attachment_count,
+                        m.features.seconds_since_previous_message,
                         m.features.seconds_since_previous_other_sender,
+                        m.features.utc_year, m.features.utc_month, m.features.utc_day,
+                        m.features.utc_weekday, m.features.utc_hour,
+                        m.features.local_year, m.features.local_month, m.features.local_day,
+                        m.features.local_weekday, m.features.local_hour,
                     )
                     for m in result.messages
                 ],

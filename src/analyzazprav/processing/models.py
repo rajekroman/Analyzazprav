@@ -5,6 +5,22 @@ from typing import Any, Mapping
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentRef:
+    id: int
+    sha256: str | None
+    mime_type: str | None
+    size_bytes: int | None
+    filename: str | None
+    availability: str
+    position: int | None
+    media_type: str
+
+    @property
+    def dedup_key(self) -> str:
+        return self.sha256 or f"attachment:{self.id}:{self.availability}"
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalMessage:
     """Read-only projection of one A2 canonical message."""
 
@@ -15,7 +31,9 @@ class CanonicalMessage:
     text: str | None = None
     source_message_id: str | None = None
     source_order: int | None = None
-    attachment_keys: tuple[str, ...] = ()
+    timezone_offset_min: int | None = None
+    message_type: str = "text"
+    attachments: tuple[AttachmentRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +108,26 @@ class MessageFeatures:
     has_question: bool
     has_url: bool
     has_attachment: bool
+    attachment_count: int
+    image_count: int
+    gif_count: int
+    video_count: int
+    audio_count: int
+    document_count: int
+    other_media_count: int
+    missing_attachment_count: int
     seconds_since_previous_message: float | None
     seconds_since_previous_other_sender: float | None
+    utc_year: int | None
+    utc_month: int | None
+    utc_day: int | None
+    utc_weekday: int | None
+    utc_hour: int | None
+    local_year: int | None
+    local_month: int | None
+    local_day: int | None
+    local_weekday: int | None
+    local_hour: int | None
 
 
 @dataclass(frozen=True, slots=True)

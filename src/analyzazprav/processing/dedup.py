@@ -16,7 +16,7 @@ def audit_duplicate_candidates(
             message.conversation_id,
             message.sender_id,
             clean_text(message.text),
-            tuple(sorted(message.attachment_keys)),
+            tuple(sorted(attachment.dedup_key for attachment in message.attachments)),
         )
         groups.setdefault(key, []).append(message)
 

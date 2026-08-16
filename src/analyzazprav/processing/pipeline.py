@@ -13,7 +13,7 @@ from .structure import (
 )
 from .text import clean_text
 
-PROCESSING_VERSION = "1"
+PROCESSING_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
