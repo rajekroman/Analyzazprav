@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4');
 
 CREATE TABLE IF NOT EXISTS schema_migration (
     version INTEGER PRIMARY KEY,
@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS message (
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     sender_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
     sent_at_utc_us INTEGER,
+    sent_at_local_iso TEXT,
+    timezone_name TEXT,
     timezone_offset_min INTEGER,
     timestamp_precision TEXT NOT NULL DEFAULT 'unknown'
         CHECK(timestamp_precision IN ('microsecond','millisecond','second','minute','unknown')),
@@ -102,6 +104,22 @@ CREATE INDEX IF NOT EXISTS idx_message_conversation_time
 ON message(conversation_id, sent_at_utc_us, id);
 CREATE INDEX IF NOT EXISTS idx_message_sender_time
 ON message(sender_id, sent_at_utc_us, id);
+
+CREATE TRIGGER IF NOT EXISTS trg_message_timezone_offset_insert
+BEFORE INSERT ON message
+WHEN NEW.timezone_offset_min IS NOT NULL
+ AND (NEW.timezone_offset_min < -840 OR NEW.timezone_offset_min > 840)
+BEGIN
+    SELECT RAISE(ABORT, 'timezone_offset_min out of range');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_message_timezone_offset_update
+BEFORE UPDATE OF timezone_offset_min ON message
+WHEN NEW.timezone_offset_min IS NOT NULL
+ AND (NEW.timezone_offset_min < -840 OR NEW.timezone_offset_min > 840)
+BEGIN
+    SELECT RAISE(ABORT, 'timezone_offset_min out of range');
+END;
 
 CREATE TABLE IF NOT EXISTS message_source (
     id INTEGER PRIMARY KEY,
@@ -168,7 +186,7 @@ CREATE TABLE IF NOT EXISTS attachment_source (
 CREATE VIEW IF NOT EXISTS analysis_messages AS
 SELECT m.id, m.conversation_id, m.sender_id,
        p.canonical_name AS sender_name, p.is_self AS sender_is_self,
-       m.sent_at_utc_us, m.timezone_offset_min,
+       m.sent_at_utc_us, m.sent_at_local_iso, m.timezone_name, m.timezone_offset_min,
        m.timestamp_precision, m.timestamp_quality,
        m.direction, m.message_type, m.text, m.is_edited, m.is_deleted, m.service
 FROM message m LEFT JOIN participant p ON p.id = m.sender_id;
