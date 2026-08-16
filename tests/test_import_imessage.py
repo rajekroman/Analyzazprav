@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -79,6 +80,8 @@ def test_import_emits_a1_staging_contract(tmp_path: Path):
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["contract_version"] == "1"
     assert manifest["source"]["sha256"] == stats.source_sha256
+    assert manifest["source"]["snapshot_method"] == "sqlite_online_backup_v1"
+    assert manifest["source"]["snapshot_includes_committed_wal"] is True
     assert manifest["counts"]["messages_seen"] == 1
     assert manifest["counts"]["messages_emitted"] == 1
     assert manifest["parser"]["version"] == "0.4.0"
@@ -144,8 +147,58 @@ def test_same_source_produces_same_record_key(tmp_path: Path):
     make_chat_db(source)
     first = tmp_path / "one"
     second = tmp_path / "two"
-    import_imessage(source, first)
-    import_imessage(source, second)
+    first_stats = import_imessage(source, first)
+    second_stats = import_imessage(source, second)
     one = json.loads((first / "messages.jsonl").read_text(encoding="utf-8"))
     two = json.loads((second / "messages.jsonl").read_text(encoding="utf-8"))
+    assert first_stats.source_sha256 == second_stats.source_sha256
     assert one["source_record_key"] == two["source_record_key"]
+
+
+def test_committed_wal_content_is_included_in_same_hashed_snapshot(tmp_path: Path):
+    source = tmp_path / "chat.db"
+    output = tmp_path / "staging"
+    make_chat_db(source)
+
+    writer = sqlite3.connect(source)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "INSERT INTO message VALUES(11, 'GUID-11', 'Z WAL', NULL, 2, ?, 0, 'iMessage', NULL)",
+            (800_000_001 * 1_000_000_000,),
+        )
+        writer.execute("INSERT INTO chat_message_join VALUES(7,11)")
+        writer.commit()
+
+        wal_path = Path(str(source) + "-wal")
+        assert wal_path.is_file()
+        assert wal_path.stat().st_size > 0
+
+        main_before = hashlib.sha256(source.read_bytes()).hexdigest()
+        wal_before = hashlib.sha256(wal_path.read_bytes()).hexdigest()
+
+        stats = import_imessage(source, output)
+
+        # A1 is a read-only consumer of the live source database. The logical
+        # snapshot is materialized elsewhere and must not checkpoint/rewrite it.
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == main_before
+        assert wal_path.is_file()
+        assert hashlib.sha256(wal_path.read_bytes()).hexdigest() == wal_before
+
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["source"]["sha256"] == stats.source_sha256
+        assert manifest["source"]["snapshot_method"] == "sqlite_online_backup_v1"
+        assert manifest["source"]["snapshot_includes_committed_wal"] is True
+
+        records = [
+            json.loads(line)
+            for line in (output / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [record["source_message_id"] for record in records] == ["10", "11"]
+        assert [record["source_guid"] for record in records] == ["GUID-10", "GUID-11"]
+        assert stats.messages_seen == 2
+        assert stats.messages_emitted == 2
+        assert all(record["source_sha256"] == stats.source_sha256 for record in records)
+    finally:
+        writer.close()
