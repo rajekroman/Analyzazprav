@@ -5,11 +5,11 @@ import json
 
 from .config import AnalyticsConfig
 
-ANALYTICS_VERSION = "7"
+ANALYTICS_VERSION = "6"
 
 
 def analysis_signature(config: AnalyticsConfig) -> str:
-    """Hash code/schema contract plus all deterministic analysis configuration."""
+    """Hash algorithm version, input contract and deterministic configuration."""
 
     payload = {
         "analytics_version": ANALYTICS_VERSION,
