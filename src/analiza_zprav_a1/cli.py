@@ -13,6 +13,7 @@ from .importer import (
     import_imessage,
 )
 from .reconciliation import reconcile_bundle
+from .schema_diff import compare_schema_files
 from .source_detection import detect_source
 
 
@@ -44,6 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reconcile.add_argument("--source", required=True, type=Path)
     reconcile.add_argument("--output-dir", required=True, type=Path)
+
+    schema_diff = sub.add_parser(
+        "schema-diff",
+        help="Compare two A1 schema.json inventories without reading source row data",
+    )
+    schema_diff.add_argument("--before", required=True, type=Path)
+    schema_diff.add_argument("--after", required=True, type=Path)
+    schema_diff.add_argument(
+        "--fail-on-change",
+        action="store_true",
+        help="Return exit code 2 when a structural schema change is detected",
+    )
 
     imessage = sub.add_parser(
         "imessage",
@@ -104,6 +117,11 @@ def main() -> int:
         result = reconcile_bundle(args.output_dir, args.source)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["ok"] else 2
+
+    if args.command == "schema-diff":
+        result = compare_schema_files(args.before, args.after)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 2 if args.fail_on_change and result["changed"] else 0
 
     if args.command == "imessage":
         stats = import_imessage(args.chat_db, args.output_dir, args.attachments_root)
