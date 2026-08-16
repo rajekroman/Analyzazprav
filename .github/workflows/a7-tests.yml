@@ -1,0 +1,39 @@
+name: A7 tests
+
+on:
+  pull_request:
+    paths:
+      - 'src/analyzazprav/qa/**'
+      - 'tests/**'
+      - 'docs/A7_QA.md'
+      - 'pyproject.toml'
+      - '.github/workflows/a7-tests.yml'
+  push:
+    branches:
+      - main
+      - agent/a0-a7-vertical-v2
+    paths:
+      - 'src/analyzazprav/qa/**'
+      - 'tests/**'
+      - 'docs/A7_QA.md'
+      - 'pyproject.toml'
+      - '.github/workflows/a7-tests.yml'
+
+jobs:
+  vertical-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e . pytest
+      - name: Verify unified CLI entry points
+        run: |
+          az-import --help
+          az-normalize --help
+          az-process --help
+          az-qa --help
+      - name: Run full A1+A2+A3+A7 regression suite
+        run: python -m pytest -q
