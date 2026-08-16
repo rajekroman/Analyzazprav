@@ -6,6 +6,8 @@ Aktuální funkční slice podporuje:
 
 - Apple Messages `chat.db`;
 - iMazing Messages CSV s hlavičkou;
+- obecné message CSV s hlavičkou;
+- JSON a JSONL message exporty;
 - resolver skutečných souborů příloh + SHA-256.
 
 ## Vlastnosti
@@ -18,9 +20,10 @@ Aktuální funkční slice podporuje:
 - každý record obsahuje SHA-256 zdroje a stabilní `source_record_key` pro idempotentní zpracování v A2;
 - přílohy mohou být dohledány přes `--attachments-root`; nalezený soubor dostane `resolved_path`, `actual_bytes`, `sha256` a stav `resolved`;
 - nedohledaná příloha zůstává ve staging recordu se stavem `missing` — message record se neztrácí;
-- iMazing CSV používá autodetekci delimiteru `,`, `;` nebo tab a tolerantní aliasy názvů sloupců;
-- celý původní CSV řádek zůstává v `raw_payload` pro audit A7;
+- CSV používá autodetekci delimiteru `,`, `;` nebo tab a pouze omezené jednoznačné aliasy názvů sloupců;
+- celý původní CSV/JSON record zůstává v `raw_payload` pro audit A7;
 - datum s explicitním timezone offsetem se převádí do UTC; lokální datum bez offsetu zůstává raw a není falešně označeno jako UTC;
+- neznámý numerický timestamp se automaticky nepřevádí, protože bez znalosti epochy/jednotky by šlo o neauditovatelný odhad;
 - vše běží lokálně, bez cloudu, externího API a AI.
 
 ## A1 → A2 kontrakt
@@ -57,6 +60,35 @@ az-import imazing-csv \
 
 Parser očekává CSV s hlavičkou. Headerless export je záměrně odmítnut, protože bez explicitní mapy sloupců by A1 musel hádat význam hodnot a porušil by auditovatelnost.
 
+## Obecné CSV
+
+```bash
+az-import csv \
+  --csv ./export/messages.csv \
+  --attachments-root ./export/attachments \
+  --output-dir ./staging/csv
+```
+
+Automaticky se mapují pouze běžné jednoznačné aliasy jako `text/message/body`, `sender/from`, `timestamp/date`, `conversation/chat/thread`, `direction`, `service` a `attachment(s)`. Všechny původní sloupce zůstávají v `raw_payload`.
+
+## JSON / JSONL
+
+```bash
+az-import json \
+  --json ./export/messages.json \
+  --attachments-root ./export/attachments \
+  --output-dir ./staging/json
+```
+
+Podporované vstupní tvary:
+
+- JSON list objektů;
+- JSON objekt s polem `messages`;
+- jeden JSON message objekt;
+- JSONL, jeden objekt na řádek.
+
+Nested attachment objekt může obsahovat `path`/`filename`/`file`/`name`, MIME typ a velikost; celý objekt se zároveň zachová jako raw metadata.
+
 ## Attachment status
 
 - `resolved` — soubor existuje, byl spočítán SHA-256 a skutečná velikost;
@@ -65,7 +97,7 @@ Parser očekává CSV s hlavičkou. Headerless export je záměrně odmítnut, p
 
 ## Další A1 slice
 
-1. generic CSV/JSON/TXT adapter;
+1. TXT import s explicitním profilem/bez hádání message boundaries;
 2. participant/group-chat membership;
 3. reactions/Tapbacks a edit history;
 4. robustnější `attributedBody` decoder;
