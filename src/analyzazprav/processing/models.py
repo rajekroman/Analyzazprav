@@ -126,7 +126,7 @@ class SenderRun:
     message_count: int
     char_count: int
     resolved_participant_id: int | None = None
-    method: str = "deterministic_resolved_sender_run_v3"
+    method: str = "deterministic_resolved_sender_run_v4"
 
 
 @dataclass(frozen=True, slots=True)
