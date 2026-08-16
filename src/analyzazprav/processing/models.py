@@ -5,6 +5,54 @@ from typing import Any, Mapping
 
 
 @dataclass(frozen=True, slots=True)
+class ParticipantIdentity:
+    id: int
+    participant_id: int
+    identity_type: str
+    normalized_value: str
+    original_value: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalParticipant:
+    id: int
+    canonical_name: str | None
+    is_self: bool
+    identities: tuple[ParticipantIdentity, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedParticipant:
+    id: int
+    canonical_name: str | None
+    is_self: bool
+    member_participant_ids: tuple[int, ...]
+    method: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantAlias:
+    resolved_participant_id: int
+    participant_id: int
+    participant_identity_id: int
+    identity_type: str
+    normalized_value: str
+    original_value: str | None
+    method: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantResolutionCandidate:
+    left_participant_id: int
+    right_participant_id: int
+    reason: str
+    confidence: float
+    method: str
+
+
+@dataclass(frozen=True, slots=True)
 class AttachmentRef:
     id: int
     sha256: str | None
@@ -52,6 +100,7 @@ class MessageRelation:
 class A2Projection:
     messages: tuple[CanonicalMessage, ...]
     relations: tuple[MessageRelation, ...] = field(default_factory=tuple)
+    participants: tuple[CanonicalParticipant, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +125,8 @@ class SenderRun:
     end_us: int | None
     message_count: int
     char_count: int
-    method: str = "deterministic_sender_run_v2"
+    resolved_participant_id: int | None = None
+    method: str = "deterministic_resolved_sender_run_v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +200,7 @@ class ProcessedMessage:
     session_id: int
     thread_id: int | None
     features: MessageFeatures
+    resolved_sender_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,3 +210,6 @@ class ProcessingResult:
     sessions: tuple[Session, ...]
     threads: tuple[Thread, ...] = field(default_factory=tuple)
     duplicate_candidates: tuple[DuplicateCandidate, ...] = field(default_factory=tuple)
+    resolved_participants: tuple[ResolvedParticipant, ...] = field(default_factory=tuple)
+    participant_aliases: tuple[ParticipantAlias, ...] = field(default_factory=tuple)
+    participant_resolution_candidates: tuple[ParticipantResolutionCandidate, ...] = field(default_factory=tuple)

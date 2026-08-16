@@ -12,11 +12,59 @@ CREATE TABLE IF NOT EXISTS processing_run (
     output_membership_count INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS resolved_participant (
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL,
+    canonical_name TEXT,
+    is_self INTEGER NOT NULL CHECK(is_self IN (0,1)),
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(processing_run_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS resolved_participant_member (
+    processing_run_id INTEGER NOT NULL,
+    resolved_participant_id INTEGER NOT NULL,
+    participant_id INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(processing_run_id, resolved_participant_id, participant_id),
+    FOREIGN KEY(processing_run_id, resolved_participant_id)
+        REFERENCES resolved_participant(processing_run_id, id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS participant_alias (
+    processing_run_id INTEGER NOT NULL,
+    resolved_participant_id INTEGER NOT NULL,
+    participant_id INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    participant_identity_id INTEGER NOT NULL,
+    identity_type TEXT NOT NULL,
+    normalized_value TEXT NOT NULL,
+    original_value TEXT,
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(processing_run_id, participant_identity_id),
+    FOREIGN KEY(processing_run_id, resolved_participant_id)
+        REFERENCES resolved_participant(processing_run_id, id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS participant_resolution_candidate (
+    processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
+    participant_id_a INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    participant_id_b INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence BETWEEN 0.0 AND 1.0),
+    method TEXT NOT NULL,
+    CHECK(participant_id_a < participant_id_b),
+    PRIMARY KEY(processing_run_id, participant_id_a, participant_id_b, reason)
+);
+
 CREATE TABLE IF NOT EXISTS sender_run (
     processing_run_id INTEGER NOT NULL REFERENCES processing_run(id) ON DELETE CASCADE,
     id INTEGER NOT NULL,
     conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
     sender_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
+    resolved_participant_id INTEGER,
     first_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
     last_membership_id INTEGER NOT NULL REFERENCES message_conversation(id) ON DELETE CASCADE,
     first_message_id INTEGER NOT NULL REFERENCES message(id) ON DELETE CASCADE,
@@ -26,7 +74,9 @@ CREATE TABLE IF NOT EXISTS sender_run (
     message_count INTEGER NOT NULL,
     char_count INTEGER NOT NULL,
     method TEXT NOT NULL,
-    PRIMARY KEY(processing_run_id, id)
+    PRIMARY KEY(processing_run_id, id),
+    FOREIGN KEY(processing_run_id, resolved_participant_id)
+        REFERENCES resolved_participant(processing_run_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS conversation_session (
@@ -78,6 +128,7 @@ CREATE TABLE IF NOT EXISTS processed_message (
     sender_run_id INTEGER NOT NULL,
     session_id INTEGER NOT NULL,
     thread_id INTEGER,
+    resolved_sender_id INTEGER,
     char_count INTEGER NOT NULL,
     word_count INTEGER NOT NULL,
     line_count INTEGER NOT NULL,
@@ -115,7 +166,9 @@ CREATE TABLE IF NOT EXISTS processed_message (
     FOREIGN KEY(processing_run_id, session_id)
         REFERENCES conversation_session(processing_run_id, id) ON DELETE CASCADE,
     FOREIGN KEY(processing_run_id, thread_id)
-        REFERENCES conversation_thread(processing_run_id, id)
+        REFERENCES conversation_thread(processing_run_id, id),
+    FOREIGN KEY(processing_run_id, resolved_sender_id)
+        REFERENCES resolved_participant(processing_run_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
@@ -130,28 +183,27 @@ CREATE TABLE IF NOT EXISTS a3_duplicate_candidate (
     UNIQUE(message_id_a, message_id_b, classification, processing_run_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_processed_message_membership
-ON processed_message(membership_id, processing_run_id);
-CREATE INDEX IF NOT EXISTS idx_processed_message_conversation
-ON processed_message(processing_run_id, conversation_id, sequence_number);
-CREATE INDEX IF NOT EXISTS idx_processed_message_session
-ON processed_message(processing_run_id, session_id);
-CREATE INDEX IF NOT EXISTS idx_processed_message_thread
-ON processed_message(processing_run_id, thread_id);
-CREATE INDEX IF NOT EXISTS idx_processed_message_utc_period
-ON processed_message(processing_run_id, utc_year, utc_month, utc_day);
-CREATE INDEX IF NOT EXISTS idx_processed_message_local_period
-ON processed_message(processing_run_id, local_year, local_month, local_day);
-CREATE INDEX IF NOT EXISTS idx_sender_run_conversation
-ON sender_run(processing_run_id, conversation_id, id);
-CREATE INDEX IF NOT EXISTS idx_session_conversation
-ON conversation_session(processing_run_id, conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_membership ON processed_message(membership_id, processing_run_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_conversation ON processed_message(processing_run_id, conversation_id, sequence_number);
+CREATE INDEX IF NOT EXISTS idx_processed_message_resolved_sender ON processed_message(processing_run_id, resolved_sender_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_session ON processed_message(processing_run_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_processed_message_thread ON processed_message(processing_run_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_sender_run_conversation ON sender_run(processing_run_id, conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_sender_run_resolved ON sender_run(processing_run_id, resolved_participant_id, id);
+CREATE INDEX IF NOT EXISTS idx_session_conversation ON conversation_session(processing_run_id, conversation_id, id);
+CREATE INDEX IF NOT EXISTS idx_alias_resolved ON participant_alias(processing_run_id, resolved_participant_id, identity_type);
 
 CREATE VIEW IF NOT EXISTS analysis_processed_messages_latest AS
-SELECT pm.*
-FROM processed_message pm
-JOIN (
-    SELECT MAX(id) AS processing_run_id
-    FROM processing_run
-    WHERE status='completed'
-) latest ON latest.processing_run_id = pm.processing_run_id;
+SELECT pm.* FROM processed_message pm
+JOIN (SELECT MAX(id) AS processing_run_id FROM processing_run WHERE status='completed') latest
+ON latest.processing_run_id = pm.processing_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_resolved_participants_latest AS
+SELECT rp.* FROM resolved_participant rp
+JOIN (SELECT MAX(id) AS processing_run_id FROM processing_run WHERE status='completed') latest
+ON latest.processing_run_id = rp.processing_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_participant_aliases_latest AS
+SELECT pa.* FROM participant_alias pa
+JOIN (SELECT MAX(id) AS processing_run_id FROM processing_run WHERE status='completed') latest
+ON latest.processing_run_id = pa.processing_run_id;
