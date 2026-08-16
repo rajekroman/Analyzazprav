@@ -8,6 +8,7 @@ dependencies = []
 [project.scripts]
 az-import = "analiza_zprav_a1.cli:main"
 az-normalize = "analyzazprav.normalization.cli:main"
+az-process = "analyzazprav.processing.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]
