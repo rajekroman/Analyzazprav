@@ -86,7 +86,11 @@ def test_a4_uses_a3_resolved_sender_and_a7_recomputes_same_identity(tmp_path: Pa
     db.finish_import(run.id)
 
     projection = load_a2_projection(db.conn)
-    processed = process_messages(list(projection.messages), list(projection.relations))
+    processed = process_messages(
+        list(projection.messages),
+        list(projection.relations),
+        participants=list(projection.participants),
+    )
     pstore = ProcessingStore(db.conn, ROOT / "database" / "a3_schema.sql")
     pstore.initialize()
     pstore.persist(processed, ProcessingConfig())
