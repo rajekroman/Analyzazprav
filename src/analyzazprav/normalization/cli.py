@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import CanonicalDatabase
+from .integrity import full_integrity_report
 from .time_contract import ingest_a1_staging_bundle
 
 
@@ -29,9 +30,9 @@ def _open_current(path: Path) -> CanonicalDatabase:
 def _cmd_init(database: Path) -> int:
     db = _open_current(database)
     try:
-        report = db.integrity_report()
+        report = full_integrity_report(db)
         payload = {
-            "status": "ok" if report["integrity"] == "ok" and not report["foreign_key_errors"] else "error",
+            "status": "ok" if report["ok"] else "error",
             "database": str(database),
             "schema_version": _schema_version(db),
             "integrity": report,
@@ -46,8 +47,8 @@ def _cmd_ingest_a1(database: Path, staging: Path) -> int:
     db = _open_current(database)
     try:
         result = ingest_a1_staging_bundle(db, staging)
-        report = db.integrity_report()
-        ok = report["integrity"] == "ok" and not report["foreign_key_errors"]
+        report = full_integrity_report(db)
+        ok = bool(report["ok"])
         _emit(
             {
                 "status": "ok" if ok else "error",
@@ -73,8 +74,8 @@ def _cmd_check(database: Path) -> int:
         return 2
     db = _open_current(database)
     try:
-        report = db.integrity_report()
-        ok = report["integrity"] == "ok" and not report["foreign_key_errors"]
+        report = full_integrity_report(db)
+        ok = bool(report["ok"])
         _emit(
             {
                 "status": "ok" if ok else "error",
@@ -102,7 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--database", type=Path, required=True)
     ingest_parser.add_argument("--staging", type=Path, required=True)
 
-    check_parser = subparsers.add_parser("check", help="Migrate if needed, then run SQLite integrity checks.")
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Migrate if needed, then run structural and semantic A2 integrity checks.",
+    )
     check_parser.add_argument("--database", type=Path, required=True)
     return parser
 

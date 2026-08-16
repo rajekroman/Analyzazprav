@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import sqlite3
 from typing import Any, Iterable, Mapping
 
 from .database import CanonicalDatabase, MessageInput
@@ -16,6 +17,48 @@ from .membership import (
 )
 
 SUPPORTED_A1_CONTRACT_VERSIONS = {"1"}
+
+
+class _AtomicImportConnection(sqlite3.Connection):
+    """SQLite connection whose nested context managers can defer commits.
+
+    Existing A2 write helpers use ``with db.conn:`` for safe standalone writes.
+    During one A1 staging import those helper-level commits would otherwise make
+    partially imported canonical rows visible when a later source record fails.
+    The outer import transaction therefore temporarily defers context-manager
+    commits while keeping explicit commit/rollback under the ingest coordinator.
+    """
+
+    defer_context_commits = False
+
+    def __exit__(self, exc_type, exc, traceback):
+        if self.defer_context_commits:
+            return False
+        return super().__exit__(exc_type, exc, traceback)
+
+
+def _start_atomic_import(db: CanonicalDatabase) -> _AtomicImportConnection:
+    """Reopen the canonical DB for one atomic import transaction.
+
+    ``begin_import`` is deliberately committed before this function is called so
+    a failed run remains auditable. All canonical/source writes after that point
+    are rolled back together on failure, and only the run status is then updated
+    to ``failed`` outside the rolled-back transaction.
+    """
+
+    if db.conn.in_transaction:
+        raise RuntimeError("Cannot start A2 atomic import inside an existing transaction")
+
+    db.conn.close()
+    conn = sqlite3.connect(db.path, factory=_AtomicImportConnection)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = FULL")
+    conn.defer_context_commits = True
+    conn.execute("BEGIN IMMEDIATE")
+    db.conn = conn
+    return conn
 
 
 @dataclass(frozen=True)
@@ -189,6 +232,11 @@ def ingest_a1_staging_bundle(
     A1 remains source extraction only. A2 owns canonical entities and preserves
     every source message occurrence, every source conversation relation and every
     attachment occurrence without relying on database-local ROWIDs as global IDs.
+
+    The audit ``import_run`` is committed first. All canonical/source writes for
+    a non-idempotent run are then one atomic SQLite transaction: either the whole
+    representation is committed and the run becomes ``completed``, or all of
+    those writes are rolled back and the run alone is marked ``failed``.
     """
 
     root = Path(staging_dir)
@@ -235,6 +283,7 @@ def ingest_a1_staging_bundle(
     if run.already_imported:
         return StagingIngestResult(import_run_id=run.id, already_imported=True)
 
+    atomic_conn = _start_atomic_import(db)
     message_count = attachment_count = relation_count = conversation_relation_count = 0
     pending_relations: list[tuple[int, str, str | None]] = []
 
@@ -452,7 +501,12 @@ def ingest_a1_staging_bundle(
                 "conversation_relations": conversation_relation_count,
             },
         )
+        atomic_conn.commit()
+        atomic_conn.defer_context_commits = False
     except Exception:
+        if atomic_conn.in_transaction:
+            atomic_conn.rollback()
+        atomic_conn.defer_context_commits = False
         db.finish_import(
             run.id,
             success=False,
