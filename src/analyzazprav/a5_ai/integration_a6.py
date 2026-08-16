@@ -23,35 +23,80 @@ def _parse_timestamp(value: Any) -> datetime:
     return parsed
 
 
+def _string_tuple(value: Any, *, path: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise A6PacketError(f"{path} must be an array")
+    return tuple(sorted({str(item) for item in value if str(item)}))
+
+
 def messages_from_a6_packet(packet: Mapping[str, Any]) -> tuple[MessageRecord, ...]:
     if packet.get("schema_version") != 1:
         raise A6PacketError("Unsupported A6 analysis_packet schema_version")
     raw_messages = packet.get("messages")
     if not isinstance(raw_messages, list):
         raise A6PacketError("A6 analysis_packet.messages must be a list")
+
+    provenance_required = bool(packet.get("source_provenance_required"))
+    if provenance_required and packet.get("source_provenance_status") != "complete":
+        raise A6PacketError("A6 production packet source provenance is not complete")
+
     messages: list[MessageRecord] = []
     seen_ids: set[str] = set()
+    seen_memberships: set[str] = set()
+    conversations: set[str] = set()
     for index, raw in enumerate(raw_messages):
         if not isinstance(raw, Mapping):
             raise A6PacketError(f"A6 messages[{index}] must be an object")
         try:
             message_id = str(raw["message_id"])
+            membership_id = str(raw["membership_id"])
             conversation_id = str(raw["conversation_id"])
             sender = str(raw["sender"])
             text = str(raw.get("text") or "")
             timestamp = _parse_timestamp(raw["timestamp"])
         except KeyError as exc:
             raise A6PacketError(f"A6 messages[{index}] missing field: {exc.args[0]}") from exc
+        if not message_id or not membership_id or not conversation_id:
+            raise A6PacketError(f"A6 messages[{index}] lacks canonical identity")
         if message_id in seen_ids:
             raise A6PacketError(f"Duplicate A6 message_id in packet context: {message_id}")
+        if membership_id in seen_memberships:
+            raise A6PacketError(f"Duplicate A6 membership_id in packet context: {membership_id}")
         seen_ids.add(message_id)
-        messages.append(MessageRecord(
-            id=message_id,
-            conversation_id=conversation_id,
-            participant_id=sender,
-            timestamp=timestamp,
-            text=text,
-        ))
+        seen_memberships.add(membership_id)
+        conversations.add(conversation_id)
+
+        record_keys = _string_tuple(raw.get("source_record_keys"), path=f"A6 messages[{index}].source_record_keys")
+        snapshot_keys = _string_tuple(raw.get("source_snapshot_keys"), path=f"A6 messages[{index}].source_snapshot_keys")
+        parser_versions = _string_tuple(raw.get("source_parser_versions"), path=f"A6 messages[{index}].source_parser_versions")
+        if provenance_required and (not record_keys or not snapshot_keys):
+            raise A6PacketError(
+                f"A6 messages[{index}] lacks required A2 source provenance"
+            )
+        if provenance_required and raw.get("source_provenance_status") != "complete":
+            raise A6PacketError(
+                f"A6 messages[{index}] source_provenance_status is not complete"
+            )
+
+        messages.append(
+            MessageRecord(
+                id=message_id,
+                membership_id=membership_id,
+                conversation_id=conversation_id,
+                participant_id=sender,
+                timestamp=timestamp,
+                text=text,
+                source_record_keys=record_keys,
+                source_snapshot_keys=snapshot_keys,
+                source_parser_versions=parser_versions,
+            )
+        )
+    if len(conversations) > 1:
+        raise A6PacketError(
+            f"A6 analysis packet spans multiple conversations: {sorted(conversations)!r}"
+        )
     messages.sort(key=lambda m: (m.timestamp, m.id))
     return tuple(messages)
 
@@ -106,6 +151,8 @@ def candidate_from_a6_packet(packet: Mapping[str, Any]) -> AnalysisCandidate:
             "schema_version": 1,
             "context_before": int(packet.get("context_before", 0) or 0),
             "context_after": int(packet.get("context_after", 0) or 0),
+            "source_provenance_required": bool(packet.get("source_provenance_required")),
+            "source_provenance_status": packet.get("source_provenance_status"),
         },
     )
 
