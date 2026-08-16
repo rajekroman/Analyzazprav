@@ -6,13 +6,14 @@ from .text import clean_text
 _MAX_ORDER = 2**63 - 1
 
 
-def canonical_sort_key(message: CanonicalMessage) -> tuple[int, int, int, str, int]:
+def canonical_sort_key(message: CanonicalMessage) -> tuple[int, int, int, str, int, int]:
     return (
         1 if message.timestamp_us is None else 0,
         message.timestamp_us if message.timestamp_us is not None else _MAX_ORDER,
         message.source_order if message.source_order is not None else _MAX_ORDER,
         message.source_message_id or "",
         message.id,
+        message.membership_id,
     )
 
 
@@ -25,9 +26,11 @@ def ordered_by_conversation(messages: list[CanonicalMessage]) -> dict[int, list[
     return grouped
 
 
-def build_sender_runs(grouped: dict[int, list[CanonicalMessage]]) -> tuple[tuple[SenderRun, ...], dict[int, int]]:
+def build_sender_runs(
+    grouped: dict[int, list[CanonicalMessage]],
+) -> tuple[tuple[SenderRun, ...], dict[int, int]]:
     runs: list[SenderRun] = []
-    message_to_run: dict[int, int] = {}
+    membership_to_run: dict[int, int] = {}
     next_id = 1
     for conversation_id in sorted(grouped):
         messages = grouped[conversation_id]
@@ -42,6 +45,8 @@ def build_sender_runs(grouped: dict[int, list[CanonicalMessage]]) -> tuple[tuple
                 id=next_id,
                 conversation_id=conversation_id,
                 sender_id=sender_id,
+                first_membership_id=chunk[0].membership_id,
+                last_membership_id=chunk[-1].membership_id,
                 first_message_id=chunk[0].id,
                 last_message_id=chunk[-1].id,
                 start_us=chunk[0].timestamp_us,
@@ -51,17 +56,17 @@ def build_sender_runs(grouped: dict[int, list[CanonicalMessage]]) -> tuple[tuple
             )
             runs.append(run)
             for message in chunk:
-                message_to_run[message.id] = next_id
+                membership_to_run[message.membership_id] = next_id
             next_id += 1
             start = end
-    return tuple(runs), message_to_run
+    return tuple(runs), membership_to_run
 
 
 def build_sessions(
     grouped: dict[int, list[CanonicalMessage]], *, gap_threshold_us: int
 ) -> tuple[tuple[Session, ...], dict[int, int]]:
     sessions: list[Session] = []
-    message_to_session: dict[int, int] = {}
+    membership_to_session: dict[int, int] = {}
     next_id = 1
     for conversation_id in sorted(grouped):
         messages = grouped[conversation_id]
@@ -84,6 +89,8 @@ def build_sessions(
             session = Session(
                 id=next_id,
                 conversation_id=conversation_id,
+                first_membership_id=chunk[0].membership_id,
+                last_membership_id=chunk[-1].membership_id,
                 first_message_id=chunk[0].id,
                 last_message_id=chunk[-1].id,
                 start_us=chunk[0].timestamp_us,
@@ -93,10 +100,10 @@ def build_sessions(
             )
             sessions.append(session)
             for message in chunk:
-                message_to_session[message.id] = next_id
+                membership_to_session[message.membership_id] = next_id
             next_id += 1
             start = idx
-    return tuple(sessions), message_to_session
+    return tuple(sessions), membership_to_session
 
 
 def build_explicit_threads(
@@ -106,23 +113,35 @@ def build_explicit_threads(
     session_map: dict[int, int],
     reply_relation_types: frozenset[str],
 ) -> tuple[tuple[Thread, ...], dict[int, int]]:
-    """Build only source-evidenced reply components; unconnected messages remain unthreaded."""
-    by_id = {message.id: message for message in messages}
+    """Resolve message-level A2 replies into conversation-scoped membership threads.
+
+    A canonical message can belong to multiple conversations. An explicit A2
+    relation is therefore projected only into conversations shared by both
+    endpoint messages; it is never allowed to connect memberships across chats.
+    """
+
+    by_membership = {message.membership_id: message for message in messages}
+    memberships_by_message: dict[int, list[CanonicalMessage]] = {}
+    for message in messages:
+        memberships_by_message.setdefault(message.id, []).append(message)
+
     adjacency: dict[int, set[int]] = {}
     for relation in relations:
         if relation.relation_type not in reply_relation_types:
             continue
-        if relation.source_message_id not in by_id or relation.target_message_id not in by_id:
-            continue
-        source = by_id[relation.source_message_id]
-        target = by_id[relation.target_message_id]
-        if source.conversation_id != target.conversation_id:
-            continue
-        adjacency.setdefault(relation.source_message_id, set()).add(relation.target_message_id)
-        adjacency.setdefault(relation.target_message_id, set()).add(relation.source_message_id)
+        sources = memberships_by_message.get(relation.source_message_id, ())
+        targets = memberships_by_message.get(relation.target_message_id, ())
+        for source in sources:
+            for target in targets:
+                if source.conversation_id != target.conversation_id:
+                    continue
+                if source.membership_id == target.membership_id:
+                    continue
+                adjacency.setdefault(source.membership_id, set()).add(target.membership_id)
+                adjacency.setdefault(target.membership_id, set()).add(source.membership_id)
 
     threads: list[Thread] = []
-    message_to_thread: dict[int, int] = {}
+    membership_to_thread: dict[int, int] = {}
     visited: set[int] = set()
     next_id = 1
     for start in sorted(adjacency):
@@ -139,19 +158,26 @@ def build_explicit_threads(
             stack.extend(sorted(adjacency.get(current, ()), reverse=True))
         if len(component) < 2:
             continue
-        ordered_ids = tuple(sorted(component, key=lambda message_id: canonical_sort_key(by_id[message_id])))
-        first = by_id[ordered_ids[0]]
-        component_sessions = {session_map[message_id] for message_id in ordered_ids}
+
+        ordered_memberships = tuple(
+            sorted(component, key=lambda membership_id: canonical_sort_key(by_membership[membership_id]))
+        )
+        members = [by_membership[membership_id] for membership_id in ordered_memberships]
+        first = members[0]
+        if any(member.conversation_id != first.conversation_id for member in members):
+            raise RuntimeError("A3 thread component crossed conversation memberships")
+        component_sessions = {session_map[membership_id] for membership_id in ordered_memberships}
         thread = Thread(
             id=next_id,
             conversation_id=first.conversation_id,
             session_id=next(iter(component_sessions)) if len(component_sessions) == 1 else None,
-            message_ids=ordered_ids,
-            method="explicit_reply_component_v1",
+            membership_ids=ordered_memberships,
+            message_ids=tuple(member.id for member in members),
+            method="explicit_reply_membership_component_v2",
             confidence=1.0,
         )
         threads.append(thread)
-        for message_id in ordered_ids:
-            message_to_thread[message_id] = next_id
+        for membership_id in ordered_memberships:
+            membership_to_thread[membership_id] = next_id
         next_id += 1
-    return tuple(threads), message_to_thread
+    return tuple(threads), membership_to_thread
