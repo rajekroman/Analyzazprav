@@ -1,17 +1,29 @@
 # A5 selective AI analysis
 
-A5 is the interpretive layer of Analyzazprav. It never replaces deterministic A2–A4 processing. It receives only a bounded, relevant context and returns structured, evidence-backed interpretations.
+A5 is the interpretive layer of Analýza zpráv. It never replaces deterministic A1–A4 processing. It receives only a bounded, relevant context and returns structured, evidence-backed interpretations.
 
 ## Core guarantees
 
-- local-first provider abstraction; Ollama is the default implementation
-- deterministic candidate selection before AI inference
-- chronological context with physical blind-mode cutoffs
-- bounded context reduction that preserves explicit evidence
-- exactly one repair attempt after invalid model output
-- cache keyed by context, analysis type, mode, provider/model and prompt version
-- every material claim must resolve to supplied source evidence
-- invalid or duplicate evidence IDs fail closed
+- local-first provider abstraction; **no provider or external AI service is selected automatically**;
+- the caller must explicitly inject a provider implementation;
+- deterministic A4 candidate selection before AI inference;
+- A5 only consumes current A4 findings that pass `analysis_a4_reconciliation`;
+- chronological context with physical blind-mode cutoffs;
+- bounded context reduction that must preserve every declared candidate evidence message;
+- missing/duplicate/out-of-window evidence fails before the provider is called;
+- exactly one repair attempt after invalid model output;
+- cache keyed by context, analysis type, mode, provider/model and prompt version;
+- cached results are revalidated against current source-derived message snapshots and deterministic metric values before `CACHE_HIT` is returned;
+- every material assertion must resolve to supplied source evidence;
+- invalid or duplicate evidence IDs fail closed.
+
+## Privacy boundary
+
+A5 does not send a whole archive to a provider. `ContextBuilder` loads only the requested/candidate time window, applies blind-mode cutoff when requested, and deterministically reduces large contexts while treating declared evidence messages as mandatory.
+
+If an A4 candidate declares a source message that is not present in the loaded A2 context, A5 refuses analysis rather than silently dropping that evidence. If the mandatory evidence alone exceeds `max_messages`, A5 also refuses rather than truncating evidence.
+
+Provider choice remains an application/deployment decision. Local providers may be used, but there is no implicit Ollama/OpenAI/cloud fallback in A5 core.
 
 ## Evidence chain
 
@@ -25,44 +37,83 @@ Assertion-bearing synthesis retains A6-compatible text fields with parallel sour
 - `participant_p2` + `participant_p2_evidence`
 - `shared_dynamic` + `shared_dynamic_evidence`
 
+Observations, interpretations and patterns also require evidence. Alternative explanations and explicit unknowns are kept separately so hypotheses are not presented as deterministic facts.
+
 Prompt/cache contract: `a5-v3-assertion-evidence`.
+
+## Cache trust boundary
+
+Only a result that passed provider-output validation is stored with `COMPLETED` status. `AnalysisCache.get()` is not treated as authority: `AIAnalyzer` revalidates the deserialized cached result against the newly rebuilt `AnalysisContext` before returning `CACHE_HIT`.
+
+Revalidation checks at least:
+
+- all evidence IDs still exist in the current context;
+- evidence message snapshots exactly match current source-derived timestamp, sender and safe excerpt;
+- deterministic metric references still exist and have the current value;
+- assertion-bearing fields still have non-empty evidence;
+- confidence/strength fields remain within their contract.
+
+A malformed or tampered cache entry is ignored and recomputed through the provider path.
 
 ## A2 handoff
 
 `A2SQLiteMessageSource` reads canonical analytical views in read-only mode and provides message IDs, participant IDs, UTC timestamps, reply relations, attachment MIME types and edited/deleted flags.
 
-## A4 v6 handoff
+## A4 v9 handoff
 
-The current A4 contract is used as a deterministic candidate index. A5 adapters accept:
+A4 is a deterministic candidate index, not an interpretation source. A5 adapters accept:
 
-- `ConflictCandidate` → `conflict`
-- `ChangePoint` → `change_point`
-- `EngagementPeriodSignal` → `engagement_signal`
-- `DyadicRegime` → `dyadic_regime`
-- `TopicCandidate` → `lexical_topic`
-- `AnalyticMessage` → bounded A5 message context
+- conflict candidate → `conflict`
+- change point → `change_point`
+- engagement signal → `engagement_signal`
+- dyadic regime → `dyadic_regime`
+- lexical topic candidate → `lexical_topic`
 
-All A4 `source_message_ids` are preserved as A5 evidence IDs. A4 metric names, directions and regime labels remain deterministic source signals; A5 does not silently reinterpret them as motives or psychological facts.
+`A4SQLiteCandidateSource` reads only published `analysis_a4_*` views in read-only/query-only mode. Before reading any candidate for a conversation it requires exactly one passing `analysis_a4_reconciliation` row, including:
 
-`A4SQLiteCandidateSource` additionally reads the published `analysis_a4_*` SQLite views directly in read-only mode. Malformed JSON and duplicate source IDs fail closed. Missing optional views only disable that candidate type.
+- `uses_latest_processing_run = 1`;
+- `membership_count_delta = 0`;
+- zero invalid response/silence/event session counts;
+- `reconciliation_ok = 1`;
+- sender-accounted membership count equal to A4 source membership count when both fields are published.
 
-Lexical topic candidates remain explicitly lexical (`lexical_ngram_v1`). A5 may interpret their surrounding message evidence, but the candidate itself is not promoted to semantic truth.
+An unreconciled or stale A4 run is therefore never sent to AI.
+
+All A4 `source_message_ids` are preserved as A5 evidence IDs. A4 metric names, directions, regime labels and change points remain deterministic source signals; A5 must not silently reinterpret them as motives or psychological facts.
+
+Lexical topic candidates remain explicitly lexical. For automatic A5 topic candidates, aggregate `source_message_ids_json` must exactly match normalized `analysis_a4_topic_evidence` for the same analytics run/topic key. Undated topic evidence is not automatically converted into a bounded A5 period candidate.
+
+## Prompt behavior
+
+The system prompt requires:
+
+- observation vs interpretation separation;
+- citations for every assertion-bearing field;
+- metric references only to supplied deterministic A4 metrics;
+- alternative explanations;
+- explicit unknowns/limitations;
+- no invented message, timestamp, sender, excerpt, metric, event, motive, diagnosis or external fact;
+- psychological language only as a hypothesis, never a diagnosis or proven motive.
+
+The validator, not the provider, resolves cited IDs and metrics back to source-derived evidence.
 
 ## A6 handoff
 
 `integration_a6.py` accepts A6 `analysis_packet` schema v1. Selected message IDs become explicit manual evidence and can produce both an A5 request and a bounded message source. Duplicate packet message IDs or duplicate selected IDs are rejected.
 
-The current A6 PR renderer already consumes the finalized parallel evidence fields through its assertion/evidence drill-down path, so no additional A5-side compatibility shim is needed.
+## CI / golden slices
 
-## Golden deterministic E2E slice
+A5 promotion uses the full repository test suite, not only A5 unit tests.
 
-`tests/a5_ai/test_golden_e2e.py` validates one synthetic SQLite database through the full A5 integration boundary:
+A5 tests include:
 
-`A4 analysis_a4_events -> A4SQLiteCandidateSource -> A2 analysis_messages -> ContextBuilder -> StaticProvider -> validated A5 result -> A6 analysis_packet candidate`
+1. hand-authored negative published-view fixtures for malformed/unreconciled A4 input;
+2. a real current-main `A2 → A3 v5 → A4 v9 → A4SQLiteCandidateSource` smoke test;
+3. deterministic A4 finding → A2 context → static provider → validated A5 result → A6 packet handoff;
+4. missing-evidence tests that prove the provider is not called;
+5. corrupted-cache tests that prove tampered evidence cannot return as `CACHE_HIT`.
 
-The test proves that the same canonical message IDs survive from the A4 finding through source-derived A5 evidence and into the A6 handoff. It also verifies deterministic metric evidence (`conflict_score`) and source-derived sender/timestamp/excerpt data without any external AI service.
-
-This is intentionally a CI-safe golden integration slice. A7 PR #11 has been notified of the finalized A5 contract and this golden handoff. The final project release gate still requires the stacked A1→A7 pipeline to be assembled and independently reconciled by A7 on the integrated database.
+No external AI service is required for CI.
 
 ## Failure isolation
 
