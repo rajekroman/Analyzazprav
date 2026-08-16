@@ -42,8 +42,18 @@ CREATE TABLE IF NOT EXISTS analytics_participant_summary (
     exclamation_count INTEGER NOT NULL,
     affection_marker_count INTEGER NOT NULL,
     negative_marker_count INTEGER NOT NULL,
+    response_turn_count INTEGER NOT NULL,
+    latency_sample_count INTEGER NOT NULL,
+    unanswered_turn_count INTEGER NOT NULL,
+    mean_response_latency_seconds REAL,
     median_response_latency_seconds REAL,
+    p25_response_latency_seconds REAL,
+    p75_response_latency_seconds REAL,
+    p90_response_latency_seconds REAL,
     median_response_effort_ratio REAL,
+    clock_known_message_count INTEGER NOT NULL,
+    weekend_message_count INTEGER NOT NULL,
+    night_message_count INTEGER NOT NULL,
     engagement_score REAL NOT NULL,
     PRIMARY KEY(analytics_run_id, conversation_id, participant_id)
 );
@@ -59,6 +69,35 @@ CREATE TABLE IF NOT EXISTS analytics_response_latency (
     response_turn_id INTEGER NOT NULL,
     latency_seconds REAL CHECK(latency_seconds IS NULL OR latency_seconds >= 0),
     response_effort_ratio REAL NOT NULL CHECK(response_effort_ratio >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS analytics_time_bucket (
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    participant_id INTEGER NOT NULL REFERENCES participant(id) ON DELETE CASCADE,
+    time_basis TEXT NOT NULL CHECK(time_basis IN ('local','utc')),
+    bucket_kind TEXT NOT NULL CHECK(bucket_kind IN ('hour','weekday','weekend','night')),
+    bucket_value TEXT NOT NULL,
+    message_count INTEGER NOT NULL CHECK(message_count >= 0),
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY(
+        analytics_run_id, conversation_id, participant_id,
+        time_basis, bucket_kind, bucket_value
+    )
+);
+
+CREATE TABLE IF NOT EXISTS analytics_silence_event (
+    id INTEGER PRIMARY KEY,
+    analytics_run_id INTEGER NOT NULL REFERENCES analytics_run(id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    previous_session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
+    next_session_id INTEGER NOT NULL REFERENCES conversation_session(id) ON DELETE CASCADE,
+    gap_seconds REAL NOT NULL CHECK(gap_seconds >= 0),
+    previous_turn_id INTEGER NOT NULL,
+    return_turn_id INTEGER NOT NULL,
+    before_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
+    return_participant_id INTEGER REFERENCES participant(id) ON DELETE SET NULL,
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS analytics_daily_participant (
@@ -164,6 +203,10 @@ CREATE INDEX IF NOT EXISTS idx_a4_participant_conversation
     ON analytics_participant_summary(conversation_id, participant_id, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_latency_conversation
     ON analytics_response_latency(conversation_id, responder_id, analytics_run_id);
+CREATE INDEX IF NOT EXISTS idx_a4_time_conversation
+    ON analytics_time_bucket(conversation_id, participant_id, bucket_kind, analytics_run_id);
+CREATE INDEX IF NOT EXISTS idx_a4_silence_conversation
+    ON analytics_silence_event(conversation_id, gap_seconds, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_daily_conversation
     ON analytics_daily_participant(conversation_id, participant_id, period_date, analytics_run_id);
 CREATE INDEX IF NOT EXISTS idx_a4_period_conversation
@@ -195,6 +238,16 @@ JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
 CREATE VIEW IF NOT EXISTS analysis_a4_responses AS
 SELECT s.*
 FROM analytics_response_latency AS s
+JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_a4_time_buckets AS
+SELECT s.*
+FROM analytics_time_bucket AS s
+JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
+
+CREATE VIEW IF NOT EXISTS analysis_a4_silences AS
+SELECT s.*
+FROM analytics_silence_event AS s
 JOIN analysis_a4_latest_run AS r ON r.analytics_run_id = s.analytics_run_id;
 
 CREATE VIEW IF NOT EXISTS analysis_a4_daily AS
