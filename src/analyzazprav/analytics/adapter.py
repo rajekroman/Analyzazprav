@@ -38,17 +38,23 @@ def _analytic_query(
 ) -> tuple[str, tuple[int, ...], bool]:
     """Build the A4 read query over the integrated A2/A3 contract.
 
-    Production databases expose `analysis_messages.membership_id` and A3's
-    `analysis_processed_messages_latest`. Joining by membership is authoritative:
-    one canonical message may legitimately belong to several conversations.
+    Production databases expose `analysis_messages.membership_id` plus an A3
+    latest projection. A3 v5 adds `analysis_processed_messages_resolved_latest`,
+    which is preferred because it preserves A2 memberships while supplying the
+    conservative resolved sender id. The older latest view remains a compatible
+    fallback for A3 v4 databases.
 
     A narrow legacy-fixture fallback remains only so isolated unit tests can
     exercise A4 calculations without recreating the whole A1-A3 schema.
     """
 
     am_columns = _columns(conn, "analysis_messages")
+    resolved_columns = _columns(conn, "analysis_processed_messages_resolved_latest")
     latest_columns = _columns(conn, "analysis_processed_messages_latest")
-    integrated_contract = bool(latest_columns) and "membership_id" in am_columns
+    has_membership_contract = "membership_id" in am_columns
+    integrated_contract = has_membership_contract and bool(
+        resolved_columns or latest_columns
+    )
 
     params: list[int] = []
     filters: list[str] = []
@@ -58,10 +64,17 @@ def _analytic_query(
     where_clause = "WHERE " + " AND ".join(filters) if filters else ""
 
     if integrated_contract:
+        if resolved_columns:
+            processed_source = "analysis_processed_messages_resolved_latest"
+            participant_expr = "COALESCE(pm.resolved_sender_id, am.sender_id)"
+        else:
+            processed_source = "analysis_processed_messages_latest"
+            participant_expr = "am.sender_id"
+
         query = f"""
 SELECT am.id,
        am.conversation_id,
-       am.sender_id,
+       {participant_expr} AS participant_id,
        am.sent_at_utc_us,
        COALESCE(pm.text_clean, ''),
        pm.session_id,
@@ -83,7 +96,7 @@ SELECT am.id,
        pm.local_hour,
        am.membership_id
 FROM analysis_messages AS am
-JOIN analysis_processed_messages_latest AS pm
+JOIN {processed_source} AS pm
   ON pm.membership_id = am.membership_id
  AND pm.message_id = am.id
  AND pm.conversation_id = am.conversation_id
@@ -100,6 +113,7 @@ ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
     has_pm_conversation = "conversation_id" in pm_columns
     has_pm_membership = "membership_id" in pm_columns
     has_am_membership = "membership_id" in am_columns
+    has_resolved_sender = "resolved_sender_id" in pm_columns
     joins = ["pm.message_id = am.id"]
     fallback_params: list[int] = []
 
@@ -121,13 +135,18 @@ ORDER BY am.conversation_id, pm.sequence_number, am.membership_id
     fallback_where = (
         "WHERE " + " AND ".join(fallback_filters) if fallback_filters else ""
     )
+    participant_expr = (
+        "COALESCE(pm.resolved_sender_id, am.sender_id)"
+        if has_resolved_sender
+        else "am.sender_id"
+    )
     membership_expr = "am.membership_id" if has_am_membership else "NULL"
     membership_order = ", am.membership_id" if has_am_membership else ""
 
     query = f"""
 SELECT am.id,
        am.conversation_id,
-       am.sender_id,
+       {participant_expr} AS participant_id,
        am.sent_at_utc_us,
        COALESCE(pm.text_clean, ''),
        pm.session_id,
@@ -188,26 +207,26 @@ def load_analytic_messages(
     ]
 
     seen_memberships: set[int] = set()
+    duplicate_memberships: list[int] = []
     seen_conversation_messages: set[tuple[int, int]] = set()
-    duplicate_evidence: list[str] = []
+    duplicate_conversation_messages: list[tuple[int, int]] = []
     for message in messages:
-        conversation_message = (message.conversation_id, message.message_id)
-        if conversation_message in seen_conversation_messages:
-            duplicate_evidence.append(f"conversation/message={conversation_message}")
-        seen_conversation_messages.add(conversation_message)
-
         if message.membership_id is not None:
             if message.membership_id in seen_memberships:
-                duplicate_evidence.append(f"membership={message.membership_id}")
+                duplicate_memberships.append(message.membership_id)
             seen_memberships.add(message.membership_id)
-        elif integrated_contract:
-            duplicate_evidence.append(
-                f"missing-membership=({message.conversation_id},{message.message_id})"
-            )
+        key = (message.conversation_id, message.message_id)
+        if key in seen_conversation_messages:
+            duplicate_conversation_messages.append(key)
+        seen_conversation_messages.add(key)
 
-    if duplicate_evidence:
+    if integrated_contract and any(message.membership_id is None for message in messages):
+        raise RuntimeError("A4 integrated contract requires membership_id for every message")
+    if duplicate_memberships or duplicate_conversation_messages:
         raise RuntimeError(
-            "A4 A2/A3 reconciliation failed: " + ", ".join(sorted(set(duplicate_evidence)))
+            "A4 A3-contract reconciliation failed; duplicate memberships="
+            f"{sorted(set(duplicate_memberships))}, duplicate conversation/message="
+            f"{sorted(set(duplicate_conversation_messages))}"
         )
     return messages
 
@@ -289,7 +308,7 @@ def analyze_database(
 
 
 def _latest_analysis_states(conn: sqlite3.Connection) -> dict[int, tuple[str, str]]:
-    """Return latest v6 source fingerprint + analysis signature by conversation."""
+    """Return latest source fingerprint + analysis signature by conversation."""
 
     try:
         rows = conn.execute(
@@ -313,7 +332,7 @@ def analyze_incremental_database(
     config: AnalyticsConfig | None = None,
     conversation_ids: Iterable[int] | None = None,
 ) -> list[ConversationAnalytics]:
-    """Recompute whole conversations when source or analysis rules changed."""
+    """Recompute whole conversations when source data or analysis rules changed."""
 
     cfg = config or AnalyticsConfig()
     grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
