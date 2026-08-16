@@ -199,21 +199,22 @@ class IMessageParser:
             return []
 
         rows = conn.execute(
-            """SELECT chat_id
+            """SELECT ROWID AS relation_rowid, chat_id
                FROM chat_message_join
                WHERE message_id=?
-               ORDER BY chat_id""",
+               ORDER BY chat_id, ROWID""",
             (message_id,),
         )
         result: list[ConversationSourceRecord] = []
         seen_chat_ids: set[int] = set()
         for row in rows:
-            if row[0] is None:
+            if row["chat_id"] is None:
                 continue
-            chat_id = int(row[0])
+            chat_id = int(row["chat_id"])
             if chat_id in seen_chat_ids:
                 continue
             seen_chat_ids.add(chat_id)
+            relation_rowid = int(row["relation_rowid"])
 
             if chat_id not in participant_cache:
                 participant_cache[chat_id] = self._participants_for_chat(conn, chat_id, tables)
@@ -225,6 +226,7 @@ class IMessageParser:
             chat_metadata = dict(source_chat_metadata)
             chat_metadata["_a1_source_relation"] = {
                 "chat": {
+                    "raw_join_rowid": relation_rowid,
                     "raw_chat_rowid": chat_id,
                     "resolution_status": chat_resolution,
                 },
@@ -264,7 +266,8 @@ class IMessageParser:
         if "handle" in tables:
             rows = conn.execute(
                 """
-                SELECT chj.handle_id AS raw_handle_id,
+                SELECT chj.ROWID AS relation_rowid,
+                       chj.handle_id AS raw_handle_id,
                        h.ROWID AS resolved_handle_rowid,
                        h.id AS handle_value
                 FROM chat_handle_join chj
@@ -272,20 +275,22 @@ class IMessageParser:
                 WHERE chj.chat_id=?
                 ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
                          chj.handle_id,
-                         h.ROWID
+                         chj.ROWID
                 """,
                 (chat_id,),
             ).fetchall()
         else:
             rows = conn.execute(
                 """
-                SELECT chj.handle_id AS raw_handle_id,
+                SELECT chj.ROWID AS relation_rowid,
+                       chj.handle_id AS raw_handle_id,
                        NULL AS resolved_handle_rowid,
                        NULL AS handle_value
                 FROM chat_handle_join chj
                 WHERE chj.chat_id=?
                 ORDER BY CASE WHEN chj.handle_id IS NULL THEN 0 ELSE 1 END,
-                         chj.handle_id
+                         chj.handle_id,
+                         chj.ROWID
                 """,
                 (chat_id,),
             ).fetchall()
@@ -310,6 +315,7 @@ class IMessageParser:
 
             relation: dict[str, Any] = {
                 "source_relation_ordinal": ordinal,
+                "raw_join_rowid": int(row["relation_rowid"]),
                 "raw_chat_rowid": chat_id,
                 "raw_handle_id": raw_handle_id,
                 "resolution_status": status,
