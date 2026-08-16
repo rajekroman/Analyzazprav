@@ -74,6 +74,20 @@ class ProcessingCoreTests(unittest.TestCase):
         self.assertEqual(len(result.duplicate_candidates), 1)
         self.assertEqual(result.duplicate_candidates[0].classification, "probable_cross_export")
 
+    def test_duplicate_candidates_use_stable_id_order_and_scale_by_adjacency(self):
+        reversed_ids = [
+            CanonicalMessage(20, 10, 100, 0, "Stejné", "a", 1),
+            CanonicalMessage(10, 10, 100, 1_000_000, "Stejné", "b", 2),
+        ]
+        candidate = process_messages(reversed_ids).duplicate_candidates[0]
+        self.assertEqual((candidate.left_message_id, candidate.right_message_id), (10, 20))
+
+        repeated = [
+            CanonicalMessage(1_000 + index, 10, 100, index * 3_000_000, "Ano", f"r-{index}", index)
+            for index in range(3_000)
+        ]
+        self.assertEqual(process_messages(repeated).duplicate_candidates, ())
+
     def test_only_explicit_reply_relations_form_threads(self):
         relations = [MessageRelation(3, 2, "reply"), MessageRelation(4, 3, "reaction")]
         result = process_messages(self.messages, relations)
