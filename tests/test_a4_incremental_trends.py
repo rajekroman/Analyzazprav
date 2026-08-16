@@ -158,7 +158,7 @@ class IncrementalTrendTests(unittest.TestCase):
         version = conn.execute(
             "SELECT analytics_version FROM analytics_run WHERE id = 2"
         ).fetchone()[0]
-        self.assertEqual(version, "6")
+        self.assertEqual(version, "8")
         self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_cli_full_then_incremental_noop(self) -> None:
