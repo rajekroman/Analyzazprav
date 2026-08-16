@@ -32,7 +32,7 @@ class A2DatabaseTests(unittest.TestCase):
         row = self.db.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()
-        self.assertEqual(row["value"], "4")
+        self.assertEqual(row["value"], "5")
 
     def test_import_is_idempotent_after_completion(self):
         run = self._import("same-file")
@@ -55,7 +55,8 @@ class A2DatabaseTests(unittest.TestCase):
             import_run_id=run1.id, source_type="chatdb", conversation_id=conversation,
             sender_id=sender, sent_at_utc_us=1_700_000_000_000_000,
             direction="incoming", text="Ahoj", service="iMessage", canonical_guid="GUID-1",
-            source_message_id="GUID-1", raw_text="Ahoj", raw_payload={"rowid": 1}
+            source_message_id="GUID-1", source_conversation_id="chat-1",
+            raw_text="Ahoj", raw_payload={"rowid": 1}
         ))
         self.db.finish_import(run1.id)
 
@@ -69,6 +70,9 @@ class A2DatabaseTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 1)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message_source").fetchone()[0], 2)
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM message_conversation").fetchone()[0], 1
+        )
 
     def test_repeated_same_text_is_not_destructively_deduplicated(self):
         run = self._import("repeated-text")
@@ -85,10 +89,14 @@ class A2DatabaseTests(unittest.TestCase):
                 import_run_id=run.id, source_type="fixture", conversation_id=conversation,
                 sender_id=sender, sent_at_utc_us=123456789,
                 direction="incoming", text="Ano", raw_text="Ano",
-                source_message_id=source_id, raw_payload={"id": source_id}
+                source_message_id=source_id, source_conversation_id="c1",
+                raw_payload={"id": source_id}
             )))
         self.assertNotEqual(ids[0], ids[1])
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM message").fetchone()[0], 2)
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM message_conversation").fetchone()[0], 2
+        )
 
     def test_missing_attachment_is_preserved(self):
         run = self._import("attachment")
@@ -99,7 +107,8 @@ class A2DatabaseTests(unittest.TestCase):
         message_id = self.db.insert_message(MessageInput(
             import_run_id=run.id, source_type="fixture", conversation_id=conversation,
             sender_id=sender, sent_at_utc_us=None, message_type="attachment",
-            source_message_id="m-attachment", raw_payload={"id": "m-attachment"}
+            source_message_id="m-attachment", source_conversation_id="c2",
+            raw_payload={"id": "m-attachment"}
         ))
         attachment_id = self.db.add_attachment(
             message_id=message_id, import_run_id=run.id, filename="IMG_0001.HEIC",
