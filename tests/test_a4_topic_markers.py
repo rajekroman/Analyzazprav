@@ -134,7 +134,7 @@ class TopicMarkerAnalyticsTests(unittest.TestCase):
         self.assertEqual(run_id, 1)
         self.assertEqual(
             conn.execute("SELECT analytics_version FROM analytics_run").fetchone(),
-            ("8",),
+            ("9",),
         )
 
         topic_key = "lexical_ngram_v1:2:dovolená chorvatsko"
