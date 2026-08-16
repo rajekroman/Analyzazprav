@@ -1,219 +1,178 @@
 # A7 — QA / validace
 
-A7 je nezávislá auditní vrstva projektu Analýza zpráv. Jejím úkolem není opravovat data, ale prokázat, že skutečná cesta A1→A2→A3 zachovala zdrojové záznamy, vztahy a provenance a že derived processing odpovídá canonical memberships.
+A7 je nezávislá auditní vrstva projektu Analýza zpráv. Neopravuje data; prokazuje, že skutečná cesta od source importu přes canonical/derived data až po deterministické A4 metriky zachovala účetní úplnost, provenance a reprodukovatelnost.
 
 ## Autoritativní cesta
 
 ```text
 source
 → A1 staging + reconciliation.json
-→ A2 canonical SQLite v5
-→ A3 derived processing v4
-→ A7 reconciliation report
+→ A2 canonical SQLite v6
+→ A3 derived processing v5 + participant resolution
+→ A4 deterministic analytics
+→ A7 reconciliation/oracle report
 ```
 
-A7 neudržuje paralelní message model. Čte existující staging kontrakt, A1 source reconciliation a existující A2/A3 tabulky read-only.
+A7 neudržuje paralelní message model. Čte existující A1 kontrakt a A2/A3/A4 tabulky read-only. Kde validuje metriku, provádí vlastní výpočet místo důvěry v self-reported A4 diagnostiku.
 
 ## CLI
 
 ```bash
 az-qa staging --staging ./staging/imessage
+az-qa vertical --staging ./staging/imessage --database ./messages.sqlite
+az-qa participants --database ./messages.sqlite
+az-qa analytics --database ./messages.sqlite
 ```
 
-ověří aktuální A1 bundle **včetně povinného `reconciliation.json`**.
+- `staging` validuje A1 staging a povinný source reconciliation artifact;
+- `vertical` reconciliuje A1→A2→A3 membership/provenance cestu;
+- `participants` nezávisle ověřuje A3 participant/alias resolution;
+- `analytics` nezávisle přepočítává release-critical A4 metriky.
 
-```bash
-az-qa vertical \
-  --staging ./staging/imessage \
-  --database ./messages.sqlite
-```
+Návratový kód je nenulový při `FAIL`. Reporty obsahují konkrétní issue codes, counts a relevantní run/provenance IDs.
 
-provede A1→A2→A3 reconciliation. Vertical gate nejprve vyžaduje PASS staging/reconciliation gate; teprve potom čte databázi.
+## A1 staging a reconciliation
 
-Návratový kód je nenulový při `FAIL`. Report je JSON a obsahuje `PASS`, `WARNING` nebo `FAIL`, konkrétní issue codes, counts, fingerprints a IDs aktuálních A2/A3 runs.
+A7 kontroluje současný A1 kontrakt včetně:
 
-## A1 staging gate
+- source snapshot SHA-256 a parser version;
+- `source_record_key` uniqueness a iMessage key-v2 pravidla;
+- WAL-aware immutable SQLite snapshot provenance;
+- message/attachment/conversation-relation counts;
+- povinného `reconciliation.json`;
+- `status=ok`, `ok=true`, nulových failed checks/parse failures;
+- shody source type/SHA a fyzických JSONL counts;
+- explicitního accounting `unsupported` a `duplicate` outcomes.
 
-Nízkoúrovňový strukturální validator kontroluje přesný současný A1 kontrakt:
+Chybějící nebo failed reconciliation je `FAIL`. Explicitní `unsupported`/`duplicate` není chyba, pokud je korektně zaúčtovaný.
 
-- `contract_version = 1`;
-- source type + source snapshot SHA-256;
-- parser name/version;
-- `messages_seen`, `messages_emitted`, `attachments_seen`, `errors`;
-- JSONL record count;
-- source type/SHA shodu každého recordu;
-- unique `source_record_key`;
-- deklarovaný record-key algoritmus/version;
-- iMessage key v2 = source snapshot + physical `message.ROWID`, bez chat membership;
-- iMessage `sqlite_online_backup_v1` + committed-WAL provenance;
-- timestamp syntax bez hádání neznámých timestamps;
-- `conversation_sources[]` shape a duplicate relations;
-- attachment occurrence count a hash format.
+## A1 → A2
 
-A1 `errors != 0`, count mismatch, duplicate/malformed record key nebo nevalidní iMessage snapshot provenance jsou `FAIL`.
-
-## Povinný A1 source reconciliation gate
-
-`az-qa staging` nad strukturálním validátorem vyžaduje `manifest.outputs.reconciliation` (standardně `reconciliation.json`). Report musí být výstup A1 reconciliation nad stejným immutable source snapshotem, který byl hashován a parsován.
-
-A7 kontroluje minimálně:
-
-- `reconciliation_version = 1`;
-- `status = ok` a `ok = true`;
-- prázdné `failed_checks` a `parse_failures`;
-- všechny interní `checks` musí být `true`;
-- reconciliation source type/SHA i `actual_sha256` musí souhlasit s A1 manifestem;
-- `messages_jsonl_records` a `errors_jsonl_records` musí odpovídat fyzickým JSONL souborům;
-- počty `unsupported_records` a `duplicate_records` musí odpovídat manifest counts;
-- `manifest.counts.reconciliation_errors` musí být 0.
-
-`unsupported` a `duplicate` nejsou samy o sobě chyba: jsou platný explicitní osud source záznamu. Chybějící, nevalidní nebo failed reconciliation report je vždy `FAIL`.
-
-A7 ukládá také SHA-256 fingerprint `reconciliation.json`, aby šel konkrétní QA výsledek svázat s konkrétním source reconciliation důkazem.
-
-## A1 → A2 reconciliation
-
-A7 najde přesný completed A2 import run podle:
-
-```text
-source_type + source_sha256 + parser_version
-```
-
-Potom kontroluje:
+A7 vyžaduje přesnou shodu:
 
 ```text
 A1 source_record_key multiset
-== A2 message_source.source_record_key pro import run
+== A2 message_source.source_record_key
 ```
 
-Dále:
+pro přesný completed import run. Dále reconciliuje attachment occurrences a source conversation relations přes `message_source_conversation`.
 
-```text
-A1 attachment occurrences
-== A2 attachment_source rows pro import run
+## A2 integrity
+
+Povinné jsou:
+
+```sql
+PRAGMA integrity_check;
+PRAGMA foreign_key_check;
 ```
 
-A:
+A7 kontroluje required tables/views, exact source provenance a complete M:N membership model. `canonical_fingerprint()` umožňuje dokázat, že downstream processing nezměnil A2 authoritative data.
 
-```text
-A1 conversation_sources relations
-== A2 message_source_conversation relations pro import run
-```
+## A2 → A3
 
-Tím se kontrolují nejen entities, ale i vazby. Jedna source message ve dvou source chats proto musí dát dvě source relation rows; nestačí pouze zachovat canonical message.
-
-## A2 integrity gate
-
-A7 vždy kontroluje:
-
-- `PRAGMA integrity_check`;
-- `PRAGMA foreign_key_check`;
-- přítomnost required A2/A3 tables;
-- exact source-record provenance;
-- complete membership model.
-
-`canonical_fingerprint()` vytváří deterministický logical SHA-256 nad autoritativními A2 tabulkami. Golden integration test počítá fingerprint před a po A3 persistence a vyžaduje jejich rovnost.
-
-Tím test prokazuje, že A3 derived processing nezměnil A2 source/canonical vrstvu.
-
-## A2 → A3 reconciliation
-
-A7 používá poslední `completed` A3 processing run a vyžaduje:
+Pro poslední completed A3 run musí platit:
 
 ```text
 COUNT(A2 analysis_messages memberships)
 == processing_run.input_membership_count
 == processing_run.output_membership_count
-== COUNT(processed_message rows pro run)
+== COUNT(processed_message rows)
 ```
 
-Současně:
+a zároveň:
 
 ```text
-SET(A2 membership_id)
-== SET(A3 processed_message.membership_id)
+SET(A2 membership_id) == SET(A3 processed_message.membership_id)
 ```
 
-A:
+Každá processed membership musí být dohledatelná přes `message_source_conversation` na `message_source.source_record_key`.
+
+## A3 participant resolution
+
+A7 `participants` nezávisle kontroluje A3 resolution sidecars proti A2 participants/identities.
+
+Konzervativní pravidlo:
+
+- explicitní A2 `is_self` identities se mohou sjednotit do jedné resolved identity;
+- stejné display name samo o sobě nesmí způsobit automatický merge;
+- nejisté vazby zůstávají candidate/evidence, nikoli fakt.
+
+A4 participant accounting musí používat auditovaný A3 resolved sender, s fallbackem na A2 sender tam, kde resolution není dostupná.
+
+## A4 analytics oracle
+
+Příkaz:
+
+```bash
+az-qa analytics --database ./messages.sqlite
+```
+
+neimportuje A4 engine. Z A2/A3 dat znovu sestaví a porovná minimálně:
+
+- conversation coverage;
+- resolved participant attribution;
+- message/word/turn/session accounting;
+- session initiations;
+- response samples;
+- response latency a percentily;
+- unanswered turns;
+- question/style marker counts;
+- participant summaries a reciprocity;
+- gap-free daily metrics;
+- deterministic change-point candidates a source-message evidence;
+- exact vazbu A4 na latest A3 `processing_run_id`.
+
+### Response latency
+
+Platný response sample vzniká pouze mezi sousedními turns ve stejné A3 session, s dvěma známými různými participants.
 
 ```text
-COUNT(DISTINCT A2 canonical message IDs)
-== processing_run.canonical_message_count
+latency = response_turn.start_us - previous_turn.end_us
 ```
 
-To je kritické pro A2 M:N model: jedna canonical message ve dvou konverzacích musí zůstat dvěma processed memberships, nikoli se znovu deduplikovat podle message ID.
+Neznámý timestamp nevytváří vymyšlenou latency.
 
-## Provenance gate
+### Initiation
 
-Každá A3 processed membership musí být dohledatelná k source recordu:
+Initiator je doslovný první turn session. Je-li jeho sender neznámý, initiation zůstává neznámá a nepřipíše se pozdějšímu známému účastníkovi.
 
-```text
-processed_message.membership_id
-→ message_source_conversation
-→ message_source.source_record_key
-```
+### Change points
 
-Pokud jedna processed membership nemá žádný `source_record_key`, A7 vrací `FAIL`.
+A7 z transparentního uloženého A4 configu znovu počítá gap-free daily series a rolling prior-person baseline. Nulové activity dny se nezahazují. Change point je statistický kandidát, ne interpretace motivace nebo psychologie.
 
-## Golden vertical fixture
+## A4 provenance / incremental gate
 
-Release-blocking A7 test nevytváří paralelní ručně psané staging schema. Skutečně spouští:
+Každý A4 analytics run je vázaný na konkrétní A3 `processing_run_id`.
 
-```text
-synthetic Apple chat.db
-→ current import_imessage()
-→ current A1 source reconciliation
-→ current A7 staging bundle gate
-→ current ingest_a1_staging_bundle()
-→ current A2 v5
-→ current load_a2_projection()
-→ current process_messages()
-→ current ProcessingStore.persist()
-→ current A7 vertical validator
-```
+Nový A3 run invaliduje A4 i při identickém logickém obsahu, protože session/run IDs existují v novém provenance namespace. A7 hlásí stale vazbu jako `A4_STALE_A3_PROVENANCE`.
 
-Fixture obsahuje:
+## Negativní release fixtures
 
-- dvě physical source messages;
-- jednu message současně ve dvou source chats;
-- explicit reply GUID;
-- attachment metadata;
-- 2 canonical messages;
-- 3 canonical memberships;
-- 3 source conversation relations.
+A7 musí fail-closed zachytit minimálně:
 
-Expected QA result je `PASS`, A1 reconciliation je `ok` a A2 fingerprint před/po A3 musí být identický.
-
-## Negativní fixtures
-
-A7 úmyslně porušuje data a očekává `FAIL` minimálně v těchto případech:
-
-1. staging `source_record_key` je změněný oproti deklarovanému algorithm/version;
-2. `reconciliation.json` chybí;
-3. `reconciliation.json` deklaruje failed check;
-4. jedna A3 `processed_message` membership je odstraněna.
-
-Poslední případ musí aktivovat minimálně:
-
-- `A3_OUTPUT_ACCOUNTING_MISMATCH`;
-- `A2_A3_MEMBERSHIP_SET_MISMATCH`.
-
-Vertical gate s chybějícím/failed A1 reconciliation reportem nesmí pokračovat jako PASS do databázové vrstvy.
+- změněný A1 `source_record_key`;
+- chybějící/failed `reconciliation.json`;
+- zahozenou A3 membership;
+- chybnou A3 participant resolution;
+- ručně změněnou A4 persisted response latency (`A4_RESPONSE_SAMPLE_MISMATCH`);
+- A4 navázané na starší A3 run;
+- nekonzistentní initiation semantics.
 
 ## Stavové kódy
 
 - `PASS` — žádná chyba ani warning;
-- `WARNING` — data jsou použitelné, ale existuje explicitní quality limitation;
-- `FAIL` — reconciliation/integrity/provenance invariant je porušen.
+- `WARNING` — použitelný výsledek s explicitní quality limitation;
+- `FAIL` — porušený reconciliation/integrity/provenance/metric invariant.
 
-A7 nikdy chybu neopravuje a nikdy tiše nemaže problematický záznam.
+A7 chyby neopravuje a nikdy tiše nemaže problematický záznam.
 
-## Hranice A7
+## Hranice po A4
 
-A7 zatím validuje L0/L1/L2 datovou cestu. Po stabilizaci A4/A5/A6 se stejný princip rozšíří o:
+Po povýšení A4 je A7 pokrytí autoritativní pro datovou cestu L0→L2 a deterministické části L3/A4.
 
-- A4 metric recomputation/evidence IDs;
-- A5 citation validity a evidence-packet provenance;
-- A6 zobrazené message/membership IDs a metric IDs.
+Další rozšíření A7 patří až k A5/A6:
 
-AI output nikdy není autoritativní source data.
+- A5 evidence-packet completeness, citation validity a assertion→evidence vazby;
+- A6 zobrazené message/membership/metric IDs a možnost dohledat UI závěr zpět na source.
+
+AI output nikdy není autoritativní source data a A7 nesmí nahrazovat deterministickou metriku AI odhadem.
