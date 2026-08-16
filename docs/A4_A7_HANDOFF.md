@@ -49,6 +49,8 @@ Default incremental režim smí vrátit `up_to_date` pouze tehdy, když se nezm�
 
 Změna membership, A3 processed feature, A4 verze/metody nebo konfigurace musí dotčenou konverzaci invalidovat a přepočítat celou.
 
+A4 v8 zahrnuje do `analysis_signature` i metodu `topic_marker_cooccurrence_v1`; přechod ze starší analytické verze tedy nesmí recyklovat starý incremental výsledek.
+
 ## 6. Topic evidence reconciliation
 
 `analysis_a4_topic_period_reconciliation` musí vysvětlit všechny topic evidence rows:
@@ -59,7 +61,39 @@ Změna membership, A3 processed feature, A4 verze/metody nebo konfigurace musí 
 
 Každý řádek `analysis_a4_topic_evidence` musí být dohledatelný na canonical `message(id)`. Topic candidate je lexical evidence, ne prokázaná sémantická nebo psychologická interpretace.
 
-## 7. Foreign keys a SQLite integrity
+## 7. Topic × marker evidence reconciliation (A4 v8)
+
+`topic_marker_cooccurrence_v1` je pouze deterministická evidence, že **ve stejné zprávě**, která už je doloženou topic evidence, nastal alespoň jeden explicitně nakonfigurovaný marker.
+
+Autoritativní vztah je:
+
+`analytics_topic_evidence → analytics_topic_marker_evidence`
+
+Každý marker řádek musí mít composite FK na přesný parent:
+
+`(analytics_run_id, conversation_id, topic_key, message_id)`.
+
+Platí:
+
+- `affection_hit_count >= 0`,
+- `negative_hit_count >= 0`,
+- alespoň jeden z nich je `> 0`,
+- marker evidence je sparse podmnožina topic evidence,
+- neutrální topic evidence se nesmí odstraňovat; zůstává v `analysis_a4_topic_evidence`,
+- `analysis_a4_topic_marker_reconciliation.reconciliation_ok = 1`.
+
+A7 musí ověřit, že počet marker evidence řádků nikdy nepřekročí počet topic evidence řádků v témže latest A4 runu/konverzaci.
+
+Read kontrakty:
+
+- `analysis_a4_topic_marker_evidence` — konkrétní message-level evidence,
+- `analysis_a4_topic_marker_summary` — agregace za topic,
+- `analysis_a4_topic_marker_periods` — week/month × participant × date basis,
+- `analysis_a4_topic_marker_reconciliation` — accounting marker evidence vůči topic evidence.
+
+Marker hit **není sentiment, emoce, motivace ani psychologický stav**. Například `negative_hit_count > 0` znamená pouze výskyt explicitního markeru podle `AnalyticsConfig.negative_markers`. A4 ani A7 z toho nesmějí odvodit, že „téma je negativní“ nebo že účastník něco určitě cítil.
+
+## 8. Foreign keys a SQLite integrity
 
 Release gate musí obsahovat:
 
@@ -73,7 +107,7 @@ Požadovaný výsledek:
 - `integrity_check = ok`,
 - `foreign_key_check` bez řádků.
 
-## 8. Regression suite
+## 9. Regression suite
 
 Minimální promotion gate A4 je full repository test suite:
 
@@ -82,8 +116,8 @@ python -m pip install -e . pytest
 python -m pytest -q
 ```
 
-A4 PR navíc musí mít zelené samostatné A1, A2, A3 i A4 GitHub Actions workflow.
+A4 PR navíc musí mít zelené samostatné A1, A2, A3, A4 a A7 GitHub Actions workflow, pokud jsou na aktuálním `main` aktivní.
 
-## 9. Handoff do A5/A6
+## 10. Handoff do A5/A6
 
-A5 a A6 smějí používat pouze A4 konverzace, pro které A7 akceptuje reconciliation. AI interpretace musí odkazovat na konkrétní A4 metriky a/nebo canonical messages; A4 pattern ani topic candidate se nesmí prezentovat jako jistý psychologický fakt.
+A5 a A6 smějí používat pouze A4 konverzace, pro které A7 akceptuje reconciliation. AI interpretace musí odkazovat na konkrétní A4 metriky a/nebo canonical messages; A4 pattern, topic candidate ani topic-marker co-occurrence se nesmí prezentovat jako jistý psychologický fakt.
