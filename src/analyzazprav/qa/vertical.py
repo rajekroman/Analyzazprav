@@ -7,7 +7,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterable
 
-from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING, validate_staging_dir
+from .reconciliation import validate_staging_bundle
+from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING
 
 A2_AUTHORITATIVE_TABLES = (
     "import_run",
@@ -117,7 +118,7 @@ def _finalize(
         separators=(",", ":"),
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "staging_dir": str(staging_dir),
         "database": str(database),
@@ -136,14 +137,16 @@ def validate_vertical_pipeline(staging_dir: str | Path, database: str | Path) ->
     issues: list[dict[str, Any]] = []
     checks: dict[str, Any] = {}
 
-    staging_report = validate_staging_dir(staging_dir)
+    staging_report = validate_staging_bundle(staging_dir)
     checks["a1_staging_status"] = staging_report["status"]
     checks["a1_record_count"] = staging_report["counts"]["records"]
     checks["a1_attachment_count"] = staging_report["counts"]["attachments"]
     checks["a1_conversation_relation_count"] = staging_report["counts"]["conversation_relations"]
     checks["a1_record_set_fingerprint"] = staging_report["fingerprints"]["record_set_sha256"]
+    checks["a1_reconciliation_status"] = (staging_report.get("reconciliation") or {}).get("status")
+    checks["a1_reconciliation_fingerprint"] = staging_report["fingerprints"].get("reconciliation_sha256")
     if staging_report["status"] == STATUS_FAIL:
-        _issue(issues, "ERROR", "A1_STAGING_GATE_FAILED", "A1 staging contract validation failed")
+        _issue(issues, "ERROR", "A1_STAGING_GATE_FAILED", "A1 staging/reconciliation validation failed")
         return _finalize(staging_dir, database, issues, checks)
 
     try:
