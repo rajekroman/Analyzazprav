@@ -59,14 +59,15 @@ def conversation(frame):
     if frame.empty:
         st.info("Žádné zprávy pro zvolené filtry.")
         return []
+    limit = int(st.number_input("Zobrazit posledních zpráv", 20, 500, 100, 20))
+    display_frame = frame.tail(limit)
     labels = {}
-    for row in frame.itertuples(index=False):
+    for row in display_frame.itertuples(index=False):
         preview = row.text.replace("\n", " ")[:70]
         label = f"{row.message_id} · {row.timestamp:%Y-%m-%d %H:%M} · {row.sender} · {preview}"
         labels[label] = row.message_id
     chosen = st.multiselect("Vybrat zprávy pro analýzu", labels)
-    limit = int(st.number_input("Zobrazit posledních zpráv", 20, 500, 100, 20))
-    for row in frame.tail(limit).itertuples(index=False):
+    for row in display_frame.itertuples(index=False):
         with st.container(border=True):
             st.markdown(f"**{row.sender}** · {row.timestamp:%Y-%m-%d %H:%M:%S UTC}")
             st.write(row.text or "_Bez textu_")
@@ -124,8 +125,9 @@ def main():
         st.write("Analýza se nespouští automaticky. A6 pouze připraví auditovatelný kontext pro A5.")
         if selected:
             radius = int(st.number_input("Kontext před/po vybrané zprávě", 0, 100, 20, 5))
+            st.caption("Okolní kontext se načítá z původní chronologie kontaktu bez textového a sender filtru.")
             payload = json.dumps(
-                analysis_packet(filtered, selected, context_before=radius, context_after=radius),
+                analysis_packet(contact_frame, selected, context_before=radius, context_after=radius),
                 ensure_ascii=False,
                 indent=2,
             )
