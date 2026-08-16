@@ -1,0 +1,36 @@
+name: A7 QA
+
+on:
+  push:
+    branches:
+      - main
+      - agent/a7-qa-validation
+    paths:
+      - "qa/**"
+      - "docs/qa-validation.md"
+      - ".github/workflows/a7-qa.yml"
+  pull_request:
+    paths:
+      - "qa/**"
+      - "docs/qa-validation.md"
+      - ".github/workflows/a7-qa.yml"
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run A7 regression tests
+        run: python -m unittest discover -s qa/tests -v
+      - name: Validate golden fixture
+        run: python -m qa.staging_validator qa/fixtures/golden --report a7-golden-report.json
+      - name: Confirm corrupt fixture fails
+        shell: bash
+        run: |
+          if python -m qa.staging_validator qa/fixtures/corrupt; then
+            echo "Corrupt fixture unexpectedly passed"
+            exit 1
+          fi

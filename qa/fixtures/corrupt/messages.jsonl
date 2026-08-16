@@ -1,0 +1,2 @@
+{"source_record_key":"duplicate-key","timestamp_utc":"2026-08-16T05:00:00Z","text":"first","attachments":[]}
+{"source_record_key":"duplicate-key","timestamp_utc":"not-a-timestamp","text":"second","attachments":[]}
