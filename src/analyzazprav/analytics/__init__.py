@@ -1,4 +1,4 @@
-"""Deterministic A4 analytics over the A2/A3 canonical processing contract."""
+"""Deterministic A4 analytics over the integrated A2/A3 processing contract."""
 
 from .adapter import analyze_database, analyze_incremental_database, load_analytic_messages
 from .config import AnalyticsConfig
@@ -18,7 +18,7 @@ from .models import (
     TopicEvidence,
     TrendSummary,
 )
-from .store_v6 import AnalyticsStore
+from .store_v7 import AnalyticsStore
 from .topics import build_lexical_topic_candidates, tokenize_topic_text
 
 __all__ = [
