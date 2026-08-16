@@ -54,8 +54,9 @@ def _json_ids(value: object, *, field: str) -> tuple[int, ...]:
 class A4SQLiteCandidateSource:
     """Read-only adapter over A4's published analysis_a4_* views.
 
-    The source does not reinterpret A4 findings. It translates deterministic A4
-    rows into A5 AnalysisCandidate objects while preserving source_message_ids.
+    Candidate rows are trusted only when A4's published reconciliation view marks
+    the conversation as reconciled. The source never reinterprets A4 findings; it
+    translates deterministic rows while preserving source_message_ids.
     """
 
     database_path: Path
@@ -81,7 +82,31 @@ class A4SQLiteCandidateSource:
         ).fetchone()
         return row is not None
 
+    def _assert_reconciled(self, conversation_id: str) -> None:
+        with self._connect() as conn:
+            if not self._view_exists(conn, "analysis_a4_reconciliation"):
+                raise A4SQLiteSourceError(
+                    "A4 reconciliation view is required before A5 can trust A4 candidates"
+                )
+            try:
+                rows = conn.execute(
+                    "SELECT reconciliation_ok FROM analysis_a4_reconciliation "
+                    "WHERE CAST(conversation_id AS TEXT)=?",
+                    (str(conversation_id),),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                raise A4SQLiteSourceError(f"Cannot read analysis_a4_reconciliation: {exc}") from exc
+        if len(rows) != 1:
+            raise A4SQLiteSourceError(
+                "A4 reconciliation must contain exactly one row for the requested conversation"
+            )
+        if int(rows[0]["reconciliation_ok"] or 0) != 1:
+            raise A4SQLiteSourceError(
+                "A4 reconciliation failed; A5 refuses to interpret non-authoritative candidates"
+            )
+
     def _rows(self, view: str, conversation_id: str) -> list[sqlite3.Row]:
+        self._assert_reconciled(conversation_id)
         with self._connect() as conn:
             if not self._view_exists(conn, view):
                 return []
@@ -96,9 +121,6 @@ class A4SQLiteCandidateSource:
     def conflicts(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
         result: list[AnalysisCandidate] = []
         for row in self._rows("analysis_a4_events", conversation_id):
-            # A4's production persisted event type is `conflict_candidate`.
-            # Accept the historical draft label too so older derived databases
-            # remain readable without changing the canonical A4 meaning.
             if str(row["event_type"]) not in {"conflict_candidate", "conflict"}:
                 continue
             result.append(candidate_from_a4_conflict(SimpleNamespace(
@@ -164,8 +186,6 @@ class A4SQLiteCandidateSource:
     def topics(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
         result: list[AnalysisCandidate] = []
         for row in self._rows("analysis_a4_topics", conversation_id):
-            # Undated topics remain valid A4 evidence but cannot define a bounded
-            # A5 period; keep them outside automatic A5 candidate selection.
             if row["first_period_date"] is None or row["last_period_date"] is None:
                 continue
             result.append(candidate_from_a4_topic(SimpleNamespace(
