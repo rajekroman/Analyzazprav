@@ -8,6 +8,7 @@ from typing import Iterable
 from .attachments import resolve_attachments
 from .hashing import sha256_file, stable_message_key
 from .models import MessageRecord
+from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
 
@@ -16,6 +17,9 @@ IMESSAGE_PARSER_NAME = "imessage-chatdb"
 IMESSAGE_PARSER_VERSION = "0.3.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
+GENERIC_CSV_PARSER_NAME = "generic-message-csv"
+GENERIC_JSON_PARSER_NAME = "generic-message-json"
+GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
 
 
 @dataclass(slots=True)
@@ -138,6 +142,39 @@ def import_imazing_csv(csv_path: Path, output_dir: Path, attachments_root: Path 
         source_type="imazing_messages_csv",
         parser_name=IMAZING_PARSER_NAME,
         parser_version=IMAZING_PARSER_VERSION,
+        output_dir=output_dir,
+        attachments_root=attachments_root,
+    )
+
+
+def import_generic_csv(csv_path: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+    if not csv_path.is_file():
+        raise FileNotFoundError(csv_path)
+    if attachments_root is not None and not attachments_root.is_dir():
+        raise NotADirectoryError(attachments_root)
+    return _write_records(
+        GenericCSVParser(csv_path).iter_messages(),
+        source_path=csv_path,
+        source_type="generic_message_csv",
+        parser_name=GENERIC_CSV_PARSER_NAME,
+        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
+        output_dir=output_dir,
+        attachments_root=attachments_root,
+    )
+
+
+def import_generic_json(json_path: Path, output_dir: Path, attachments_root: Path | None = None) -> ImportStats:
+    if not json_path.is_file():
+        raise FileNotFoundError(json_path)
+    if attachments_root is not None and not attachments_root.is_dir():
+        raise NotADirectoryError(attachments_root)
+    source_type = "generic_message_jsonl" if json_path.suffix.lower() == ".jsonl" else "generic_message_json"
+    return _write_records(
+        GenericJSONParser(json_path).iter_messages(),
+        source_path=json_path,
+        source_type=source_type,
+        parser_name=GENERIC_JSON_PARSER_NAME,
+        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
         output_dir=output_dir,
         attachments_root=attachments_root,
     )
