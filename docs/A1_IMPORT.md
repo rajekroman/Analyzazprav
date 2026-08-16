@@ -6,12 +6,14 @@ Aktuální funkční slice podporuje:
 
 - Apple Messages `chat.db` včetně committed WAL stavu;
 - iMazing Messages CSV s hlavičkou;
-- obecné message CSV s hlavičkou;
+- obecné message CSV s hlavičkou nebo explicitním mapping profilem pro nestandardní/headerless export;
 - JSON a JSONL message exporty;
 - TXT s explicitní hranicí recordu (`line`, `block`, `whole`);
 - deterministickou detekci podporovaného source formátu;
 - resolver skutečných souborů příloh + SHA-256;
 - source participant membership a metadata Apple konverzací;
+- konzervativní Apple associated-message/edit provenance;
+- Unicode-safe best-effort `attributedBody` fallback;
 - auditní evidenci neemitovaných recordů přes `errors.jsonl`;
 - source-level reconciliation přes `reconciliation.json`.
 
@@ -32,13 +34,17 @@ Aktuální funkční slice podporuje:
 - zachovává se source message ID, GUID, sender handle, timestamp, `service`, reply GUID a metadata příloh;
 - pro Apple chaty se z `chat_handle_join` zachovají source participant handles a raw metadata řádku `chat`; hodnoty se cachují po `chat_id`;
 - zachovává se `raw_text` i JSON-safe `raw_payload`; BLOB hodnoty jsou reprezentované Base64;
-- `text` má prioritu, `attributedBody` má best-effort fallback bez externích knihoven;
+- `message.text` má vždy prioritu; `attributedBody` se používá pouze jako konzervativní fallback a původní BLOB zůstává v `raw_payload`;
+- Apple associated-message/edit hodnoty se projektují do metadata bez neověřeného mapování interních numeric reaction kódů;
 - každý record obsahuje source snapshot SHA-256 a stabilní `source_record_key` pro idempotentní zpracování v A2;
 - iMessage `source_record_key` v2 je nezávislý na chat membership a identifikuje fyzickou message occurrence v konkrétním snapshotu;
 - přílohy mohou být dohledány přes `--attachments-root`; nalezený soubor dostane `resolved_path`, `actual_bytes`, `sha256` a stav `resolved`;
 - nedohledaná příloha zůstává ve staging recordu se stavem `missing` — message record se neztrácí;
-- CSV používá autodetekci delimiteru `,`, `;` nebo tab a pouze omezené jednoznačné aliasy názvů sloupců;
+- standardní CSV používá autodetekci delimiteru `,`, `;` nebo tab a pouze omezené jednoznačné aliasy názvů sloupců;
+- nestandardní/headerless CSV používá explicitní JSON mapping profile, nikoli heuristiku;
 - celý původní CSV/JSON record zůstává v `raw_payload` pro audit A7;
+- headerless CSV zachovává každý source sloupec jako `column:<index>`, včetně nezmapovaných hodnot;
+- CSV parser fail-closed odmítá duplicitní headers nebo strukturálně širší řádky, které by jinak `DictReader` mohl tiše oříznout;
 - datum s explicitním timezone offsetem se převádí do UTC; lokální datum bez offsetu zůstává raw a není falešně označeno jako UTC;
 - neznámý numerický timestamp se automaticky nepřevádí, protože bez znalosti epochy/jednotky by šlo o neauditovatelný odhad;
 - generic TXT nikdy nehádá sendera ani timestamp a hranice recordu je povinně deklarována uživatelem;
@@ -76,6 +82,7 @@ Detekce je konzervativní:
 - SQLite se označí jako `imessage_chat_db` pouze pokud má Apple Messages `message` schema s požadovanými poli;
 - iMazing CSV vyžaduje iMazing chat-session header společně s message fields;
 - ostatní podporované headered CSV se označí jako generic CSV;
+- headerless/zcela nestandardní CSV se neodhaduje — import se provádí explicitně přes `az-import csv --mapping-profile ...`;
 - JSON/JSONL se strukturálně validuje během importu;
 - TXT vždy vyžaduje explicitní `--mode`;
 - neznámý nebo nejednoznačný source vrací `unknown`, nikoli odhadovaný parser.
@@ -135,6 +142,12 @@ Manifest pak obsahuje mimo jiné:
 
 Dočasný snapshot se po importu odstraní. Originální databáze zůstává read-only vstupem.
 
+### Apple associated/edit metadata a attributedBody
+
+A1 zachovává vybraná associated-message/edit source metadata jako auditovatelnou projekci, ale neodvozuje semantic reaction label z interního numeric kódu. Podrobný kontrakt je v `docs/A1_APPLE_EVENT_METADATA.md`.
+
+Pokud `message.text` chybí, A1 může zkusit Unicode-safe best-effort `attributedBody` fallback. `message.text` má vždy prioritu a source BLOB se nikdy nezahazuje. Podrobný kontrakt je v `docs/A1_ATTRIBUTED_BODY.md`.
+
 ## iMazing CSV
 
 ```bash
@@ -144,9 +157,11 @@ az-import imazing-csv \
   --output-dir ./staging/imazing
 ```
 
-Parser očekává CSV s hlavičkou. Headerless export je záměrně odmítnut, protože bez explicitní mapy sloupců by A1 musel hádat význam hodnot a porušil by auditovatelnost.
+Specializovaný iMazing parser očekává CSV s hlavičkou. Headerless iMazing export se tímto parserem záměrně nehádá. Pokud jde ve skutečnosti o obecný známý CSV layout, lze jej importovat přes generic `csv` parser s explicitním mapping profilem.
 
 ## Obecné CSV
+
+Standardní headered CSV:
 
 ```bash
 az-import csv \
@@ -156,6 +171,17 @@ az-import csv \
 ```
 
 Automaticky se mapují pouze běžné jednoznačné aliasy jako `text/message/body`, `sender/from`, `timestamp/date`, `conversation/chat/thread`, `direction`, `service` a `attachment(s)`. Všechny původní sloupce zůstávají v `raw_payload`.
+
+Nestandardní nebo headerless CSV:
+
+```bash
+az-import csv \
+  --csv ./export/messages.csv \
+  --mapping-profile ./profiles/vendor.json \
+  --output-dir ./staging/csv
+```
+
+Profil explicitně deklaruje delimiter, přítomnost hlavičky a přesné mapování kanonických polí. Manifest ukládá file SHA-256 i semantic SHA-256 profilu a semantic hash je součástí efektivní parser version, aby A2 nezaměnil dvě skutečně odlišná mapování téhož source souboru. Kompletní specifikace je v `docs/A1_CSV_MAPPING_PROFILE.md`.
 
 ## JSON / JSONL
 
@@ -209,12 +235,13 @@ Integrační suite ověřuje mimo jiné:
 - committed message existující v aktivním WAL je zahrnuta ve staging;
 - import nezmění bytes `chat.db` ani aktivního WAL;
 - dva importy stejného logického snapshotu vytvoří stejné `source.sha256` a `source_record_key`;
-- A1 staging projde A2 v5 ingestem s čistým `PRAGMA integrity_check` a `foreign_key_check`.
+- Apple associated/edit metadata projdou do A2 source provenance bez neověřené reaction semantiky;
+- Unicode `attributedBody` fallback nezmění existující `message.text` a zachová původní BLOB;
+- explicitní CSV mapping zachovává i nezmapované headerless hodnoty a fingerprintuje skutečnou mapping semantiku;
+- A1 staging projde A2/A3 integračními testy s čistým `PRAGMA integrity_check` a `foreign_key_check`.
 
 ## Další A1 slice
 
 1. ověření na reálném uživatelském `chat.db` + skutečný reconciliation report;
-2. reactions/Tapbacks a edit history;
-3. robustnější `attributedBody` decoder;
-4. explicitní mapping profil pro nestandardní/headerless CSV;
-5. A7 golden dataset generovaný přímo současným A1 importerem.
+2. A7 golden dataset generovaný přímo současným A1 importerem;
+3. semantic reaction/Tapback mapping pouze po ověření skutečných source hodnot a explicitním A1→A2/A3 kontraktu.
