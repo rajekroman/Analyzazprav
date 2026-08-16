@@ -8,6 +8,8 @@ from analyzazprav.analytics import AnalyticMessage, AnalyticsConfig, analyze_con
 from tools.a7_downstream.common import load_downstream_validator, write_report
 
 
+CONTRACT_SHA = "642c6413d304a802de69f43e65cad599dea78cd1"
+
 SOURCE = [
     {"membership_id": 101, "message_id": 1, "conversation_id": 7, "participant_id": 10, "session_id": 1, "sequence_number": 1, "timestamp_us": 0, "word_count": 2, "text": "projekt alpha"},
     {"membership_id": 102, "message_id": 2, "conversation_id": 7, "participant_id": 10, "session_id": 1, "sequence_number": 2, "timestamp_us": 60_000_000, "word_count": 3, "text": "projekt alpha pokračuje"},
@@ -64,7 +66,7 @@ def main() -> int:
     ]
     validator = load_downstream_validator()
     report = validator.validate_a4_result(source, serialized)
-    report["contract_sha"] = "2ea4dad75bbac310183cf0c0728d387a02d35688"
+    report["contract_sha"] = CONTRACT_SHA
     report["checks"]["topic_candidate_count"] = len(serialized.get("topic_candidates") or [])
     report["checks"]["topic_evidence_count"] = len(serialized.get("topic_evidence") or [])
     if not serialized.get("topic_candidates") or not serialized.get("topic_evidence"):
