@@ -73,17 +73,17 @@ jobs:
       - name: Checkout pinned A5
         uses: actions/checkout@v4
         with:
-          ref: b2ad92dfd14f9924256ea62284bfeebebb86b36f
+          ref: b729befb2c881d3ce04d19ca735da8bd8054ab2c
           path: a5-under-test
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install pinned A5 stack
         run: python -m pip install -e a5-under-test
-      - name: Audit A5 evidence chain and expected partial verdict
+      - name: Audit A5 evidence chain
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/a5-under-test/src
-        run: python -m qa.a5_live_contract --expect PARTIALLY_VALID --report a7-a5-report.json
+        run: python -m qa.a5_live_contract --expect VALID --report a7-a5-report.json
 
   a6-pinned-audit:
     runs-on: ubuntu-latest
