@@ -47,7 +47,7 @@ jobs:
       - name: Checkout pinned A4
         uses: actions/checkout@v4
         with:
-          ref: 2ea4dad75bbac310183cf0c0728d387a02d35688
+          ref: 642c6413d304a802de69f43e65cad599dea78cd1
           path: a4-under-test
       - uses: actions/setup-python@v5
         with:
@@ -97,7 +97,7 @@ jobs:
       - name: Checkout pinned A6
         uses: actions/checkout@v4
         with:
-          ref: 59028e1c9d93718105051de23db3329e5ebe0c0a
+          ref: f54c2807176515f509af50f340ea8f60a1ff7aea
           path: a6-under-test
       - uses: actions/setup-python@v5
         with:
