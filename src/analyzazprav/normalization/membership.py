@@ -217,6 +217,42 @@ def link_message_conversation(
     return membership_id
 
 
+def _insert_attachment_source(
+    db: CanonicalDatabase,
+    *,
+    attachment_id: int,
+    import_run_id: int,
+    source_attachment_id: str | None,
+    original_filename: str | None,
+    original_path: str | None,
+    raw_payload: Mapping[str, Any] | None,
+    occurrence_id: int,
+    source_occurrence_key: str,
+) -> None:
+    db.conn.execute(
+        """INSERT INTO attachment_source(
+               attachment_id, import_run_id, source_attachment_id,
+               original_filename, original_path, raw_payload_json,
+               message_attachment_occurrence_id, source_occurrence_key
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            attachment_id,
+            import_run_id,
+            source_attachment_id,
+            original_filename,
+            original_path,
+            json.dumps(
+                raw_payload or {},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            occurrence_id,
+            source_occurrence_key,
+        ),
+    )
+
+
 def add_attachment_occurrence(
     db: CanonicalDatabase,
     *,
@@ -235,13 +271,20 @@ def add_attachment_occurrence(
     original_path: str | None = None,
     raw_payload: Mapping[str, Any] | None = None,
 ) -> tuple[int, int, bool]:
-    """Store one attachment occurrence without collapsing repeated blobs."""
+    """Store one attachment occurrence without collapsing repeated blobs.
+
+    A retry of the same import run returns the existing source provenance row.
+    A newer parser run over the same immutable source snapshot reuses the same
+    canonical attachment occurrence and adds a new provenance row, even when the
+    original source did not provide a content hash.
+    """
 
     source_occurrence_key = (
         f"{source_record_key}:attachment:"
         f"{source_attachment_id if source_attachment_id is not None else position}"
         f":position:{position}"
     )
+
     existing_source = db.conn.execute(
         """SELECT attachment_id, message_attachment_occurrence_id
            FROM attachment_source
@@ -253,6 +296,49 @@ def add_attachment_occurrence(
         if occurrence_id is None:
             raise RuntimeError("attachment source occurrence exists without occurrence link")
         return int(existing_source["attachment_id"]), int(occurrence_id), False
+
+    snapshot_key, _ = import_source_snapshot(db, import_run_id)
+    previous_source = db.conn.execute(
+        """SELECT ats.attachment_id,
+                  ats.message_attachment_occurrence_id,
+                  a.sha256
+           FROM attachment_source ats
+           JOIN import_run ir ON ir.id = ats.import_run_id
+           JOIN attachment a ON a.id = ats.attachment_id
+           WHERE ats.source_occurrence_key=?
+             AND COALESCE(ir.source_sha256, 'fingerprint:' || ir.source_fingerprint)=?
+           ORDER BY ats.id
+           LIMIT 1""",
+        (source_occurrence_key, snapshot_key),
+    ).fetchone()
+    if previous_source is not None:
+        occurrence_id = previous_source["message_attachment_occurrence_id"]
+        if occurrence_id is None:
+            raise RuntimeError("prior attachment provenance has no occurrence link")
+        attachment_id = int(previous_source["attachment_id"])
+        previous_sha = previous_source["sha256"]
+        if sha256_value and previous_sha and str(previous_sha) != sha256_value:
+            raise ValueError(
+                "Same source attachment occurrence produced conflicting SHA-256 values"
+            )
+        with db.conn:
+            if sha256_value and not previous_sha:
+                db.conn.execute(
+                    "UPDATE attachment SET sha256=? WHERE id=?",
+                    (sha256_value, attachment_id),
+                )
+            _insert_attachment_source(
+                db,
+                attachment_id=attachment_id,
+                import_run_id=import_run_id,
+                source_attachment_id=source_attachment_id,
+                original_filename=original_filename,
+                original_path=original_path,
+                raw_payload=raw_payload,
+                occurrence_id=int(occurrence_id),
+                source_occurrence_key=source_occurrence_key,
+            )
+        return attachment_id, int(occurrence_id), True
 
     attachment_id: int | None = None
     if sha256_value:
@@ -307,27 +393,16 @@ def add_attachment_occurrence(
                 )
             occurrence_id = int(occurrence["id"])
 
-        db.conn.execute(
-            """INSERT INTO attachment_source(
-                   attachment_id, import_run_id, source_attachment_id,
-                   original_filename, original_path, raw_payload_json,
-                   message_attachment_occurrence_id, source_occurrence_key
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                attachment_id,
-                import_run_id,
-                source_attachment_id,
-                original_filename,
-                original_path,
-                json.dumps(
-                    raw_payload or {},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-                occurrence_id,
-                source_occurrence_key,
-            ),
+        _insert_attachment_source(
+            db,
+            attachment_id=attachment_id,
+            import_run_id=import_run_id,
+            source_attachment_id=source_attachment_id,
+            original_filename=original_filename,
+            original_path=original_path,
+            raw_payload=raw_payload,
+            occurrence_id=occurrence_id,
+            source_occurrence_key=source_occurrence_key,
         )
 
     return attachment_id, occurrence_id, True
