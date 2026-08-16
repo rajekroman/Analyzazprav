@@ -229,6 +229,15 @@ class TopicCandidate:
     source_message_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TopicMarkerEvidence:
+    conversation_id: int
+    topic_key: str
+    message_id: int
+    affection_hit_count: int
+    negative_hit_count: int
+
+
 @dataclass(slots=True)
 class ConversationAnalytics:
     conversation_id: int
@@ -252,5 +261,6 @@ class ConversationAnalytics:
     trend_summaries: list[TrendSummary] = field(default_factory=list)
     topic_candidates: list[TopicCandidate] = field(default_factory=list)
     topic_evidence: list[TopicEvidence] = field(default_factory=list)
+    topic_marker_evidence: list[TopicMarkerEvidence] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
