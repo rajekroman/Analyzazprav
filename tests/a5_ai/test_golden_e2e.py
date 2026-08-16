@@ -59,6 +59,12 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
                     target_message_id INTEGER NOT NULL,
                     relation_type TEXT NOT NULL
                 );
+                CREATE TABLE a4_reconciliation_fixture (
+                    conversation_id INTEGER NOT NULL,
+                    reconciliation_ok INTEGER NOT NULL
+                );
+                CREATE VIEW analysis_a4_reconciliation AS
+                    SELECT * FROM a4_reconciliation_fixture;
                 CREATE TABLE a4_events_fixture (
                     id INTEGER PRIMARY KEY,
                     conversation_id INTEGER NOT NULL,
@@ -82,10 +88,8 @@ class GoldenA4A5A6FlowTests(unittest.TestCase):
                     (3, 11, us(third), "I want to understand and fix it."),
                 ],
             )
-            conn.execute(
-                "INSERT INTO message_relation VALUES (1, 3, 2, 'reply')"
-            )
-            # Match the production A4 v9 persisted event type exactly.
+            conn.execute("INSERT INTO message_relation VALUES (1, 3, 2, 'reply')")
+            conn.execute("INSERT INTO a4_reconciliation_fixture VALUES (7, 1)")
             conn.execute(
                 "INSERT INTO a4_events_fixture VALUES (1, 7, 4, 'conflict_candidate', 0.82, ?, ?, ?, ?)",
                 (
