@@ -75,6 +75,12 @@ def _sniff(sample: str) -> csv.Dialect:
         return csv.excel
 
 
+def _reject_duplicate_headers(fieldnames: list[str]) -> None:
+    if len(fieldnames) != len(set(fieldnames)):
+        duplicates = sorted({name for name in fieldnames if fieldnames.count(name) > 1})
+        raise ValueError(f"iMazing CSV contains duplicate header names: {duplicates!r}")
+
+
 class IMazingCSVParser:
     def __init__(self, csv_path: Path):
         self.csv_path = csv_path
@@ -88,12 +94,19 @@ class IMazingCSVParser:
             if not reader.fieldnames:
                 raise ValueError("iMazing CSV has no header row")
 
-            normalized_headers = {_norm(name) for name in reader.fieldnames if name}
+            fieldnames = [str(name) for name in reader.fieldnames]
+            _reject_duplicate_headers(fieldnames)
+            normalized_headers = {_norm(name) for name in fieldnames if name}
             if not normalized_headers.intersection(ALIASES["text"] | ALIASES["date"] | ALIASES["sender"]):
                 raise ValueError("CSV does not look like an iMazing Messages export")
 
             for row_index, source_row in enumerate(reader, start=2):
-                row = {str(k): "" if v is None else str(v) for k, v in source_row.items() if k is not None}
+                if None in source_row:
+                    raise ValueError(
+                        f"iMazing CSV row {row_index} contains more fields than the header; "
+                        "refusing silent truncation"
+                    )
+                row = {str(k): "" if v is None else str(v) for k, v in source_row.items()}
                 conversation, conversation_column = _find(row, "conversation")
                 sender, sender_column = _find(row, "sender")
                 date_raw, date_column = _find(row, "date")

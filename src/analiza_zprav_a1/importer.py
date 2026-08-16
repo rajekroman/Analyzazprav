@@ -91,6 +91,18 @@ def _write_manifest(path: Path, manifest: dict[str, object]) -> None:
     )
 
 
+def _validate_records_before_staging(records: Iterable[MessageRecord]) -> None:
+    """Exhaust a static-source parser before any staging artifact is created.
+
+    Static adapters reopen their source on each ``iter_messages()`` call. A dry
+    pass therefore detects late structural/decoding failures before ``_write_records``
+    creates a partial bundle. The real import performs a second deterministic pass.
+    """
+
+    for _ in records:
+        pass
+
+
 def _write_records(
     records: Iterable[MessageRecord],
     *,
@@ -325,8 +337,11 @@ def import_imazing_csv(
         raise FileNotFoundError(csv_path)
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
+
+    parser = IMazingCSVParser(csv_path)
+    _validate_records_before_staging(parser.iter_messages())
     return _write_records(
-        IMazingCSVParser(csv_path).iter_messages(),
+        parser.iter_messages(),
         source_path=csv_path,
         source_type="imazing_messages_csv",
         parser_name=IMAZING_PARSER_NAME,
@@ -365,8 +380,10 @@ def import_generic_csv(
             file_sha256=profile_file_hash,
         )
 
+    parser = GenericCSVParser(csv_path, mapping_profile=profile)
+    _validate_records_before_staging(parser.iter_messages())
     return _write_records(
-        GenericCSVParser(csv_path, mapping_profile=profile).iter_messages(),
+        parser.iter_messages(),
         source_path=csv_path,
         source_type="generic_message_csv",
         parser_name=GENERIC_CSV_PARSER_NAME,
@@ -391,8 +408,11 @@ def import_generic_json(
         if json_path.suffix.lower() == ".jsonl"
         else "generic_message_json"
     )
+
+    parser = GenericJSONParser(json_path)
+    _validate_records_before_staging(parser.iter_messages())
     return _write_records(
-        GenericJSONParser(json_path).iter_messages(),
+        parser.iter_messages(),
         source_path=json_path,
         source_type=source_type,
         parser_name=GENERIC_JSON_PARSER_NAME,
@@ -405,8 +425,11 @@ def import_generic_json(
 def import_generic_text(txt_path: Path, output_dir: Path, mode: TextMode) -> ImportStats:
     if not txt_path.is_file():
         raise FileNotFoundError(txt_path)
+
+    parser = GenericTextParser(txt_path, mode)
+    _validate_records_before_staging(parser.iter_messages())
     return _write_records(
-        GenericTextParser(txt_path, mode).iter_messages(),
+        parser.iter_messages(),
         source_path=txt_path,
         source_type="generic_message_text",
         parser_name=GENERIC_TEXT_PARSER_NAME,
