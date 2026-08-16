@@ -3,7 +3,10 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from a6.a5_bridge import a5_available, run_local_a5
+from a6.data import analysis_packet, demo_messages
 
 
 def test_a5_available_returns_boolean():
@@ -85,3 +88,33 @@ def test_run_local_a5_uses_packet_adapter_and_returns_execution(monkeypatch):
         "error": None,
         "result": {"summary": "ok", "overall_confidence": 0.9},
     }
+
+
+def test_real_a5_accepts_current_a6_packet_when_package_is_composed():
+    """Composition contract test.
+
+    This intentionally skips on the standalone A6 branch where A5 is not yet
+    installed. In an A6-over-A5 merge-ref it must execute against the real A5
+    adapter and therefore turns package/API drift into a CI failure.
+    """
+    a5 = pytest.importorskip("analyzazprav.a5_ai")
+
+    frame = demo_messages()
+    selected_id = str(frame.iloc[5].message_id)
+    packet = analysis_packet(frame, [selected_id], context_before=2, context_after=2)
+
+    source = a5.A6PacketMessageSource.from_packet(packet)
+    candidate = a5.candidate_from_a6_packet(packet)
+    request = a5.request_from_a6_packet(
+        packet,
+        analysis_type=a5.AnalysisType.SEGMENT,
+        mode=a5.AnalysisMode.BLIND,
+        user_question="composition-check",
+    )
+
+    assert len(source.messages) == packet["message_count"]
+    assert candidate.conversation_id == frame.iloc[5].conversation_id
+    assert candidate.evidence_message_ids == (selected_id,)
+    assert request.conversation_id == candidate.conversation_id
+    assert request.candidate_id == candidate.id
+    assert request.user_question == "composition-check"
