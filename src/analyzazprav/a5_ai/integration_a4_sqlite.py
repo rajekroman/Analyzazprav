@@ -63,10 +63,11 @@ _SEMANTICS = {
 class A4SQLiteCandidateSource:
     """Read-only adapter over A4 published analysis views.
 
-    Current production rows are bound to exact A4 analytics-run provenance.
+    Production candidates are accepted only when both exact A4 run provenance and
+    the published A4 reconciliation gate say the conversation is authoritative.
     Tiny legacy unit fixtures without analytics_run_id remain readable only so
-    converter behavior can be tested in isolation; such candidates are marked
-    as lacking production provenance.
+    converter behavior can be tested in isolation; they are explicitly marked as
+    lacking production provenance and are never equivalent to production rows.
     """
 
     database_path: Path
@@ -150,6 +151,35 @@ class A4SQLiteCandidateSource:
         metadata["analysis_signature"] = str(state["analysis_signature"])
         return metadata
 
+    def _assert_reconciled(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+    ) -> None:
+        if not self._object_exists(conn, "analysis_a4_reconciliation", "view"):
+            raise A4SQLiteSourceError(
+                "Current A4 production candidates require analysis_a4_reconciliation"
+            )
+        try:
+            rows = conn.execute(
+                """SELECT reconciliation_ok
+                   FROM analysis_a4_reconciliation
+                   WHERE CAST(conversation_id AS TEXT)=?""",
+                (str(conversation_id),),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise A4SQLiteSourceError(
+                f"Cannot read analysis_a4_reconciliation: {exc}"
+            ) from exc
+        if len(rows) != 1:
+            raise A4SQLiteSourceError(
+                "A4 reconciliation must contain exactly one row for the requested conversation"
+            )
+        if int(rows[0]["reconciliation_ok"] or 0) != 1:
+            raise A4SQLiteSourceError(
+                "A4 reconciliation failed; A5 refuses non-authoritative candidates"
+            )
+
     def _rows(
         self,
         view: str,
@@ -163,7 +193,15 @@ class A4SQLiteCandidateSource:
                     f"SELECT * FROM {view} WHERE CAST(conversation_id AS TEXT)=?",
                     (str(conversation_id),),
                 ).fetchall()
-                return [(row, self._provenance(conn, row)) for row in rows]
+                decorated = [(row, self._provenance(conn, row)) for row in rows]
+                if any(
+                    provenance.get("a4_provenance_status") == "complete"
+                    for _, provenance in decorated
+                ):
+                    self._assert_reconciled(conn, conversation_id)
+                return decorated
+            except A4SQLiteSourceError:
+                raise
             except sqlite3.Error as exc:
                 raise A4SQLiteSourceError(f"Cannot read {view}: {exc}") from exc
 
@@ -185,7 +223,10 @@ class A4SQLiteCandidateSource:
     def conflicts(self, conversation_id: str) -> tuple[AnalysisCandidate, ...]:
         result: list[AnalysisCandidate] = []
         for row, provenance in self._rows("analysis_a4_events", conversation_id):
-            if str(row["event_type"]) != "conflict":
+            # A4 v9 persists detected conflicts as conflict_candidate. Keep the
+            # historical draft label readable, but never promote unrelated event
+            # types into an A5 conflict candidate.
+            if str(row["event_type"]) not in {"conflict_candidate", "conflict"}:
                 continue
             candidate = candidate_from_a4_conflict(
                 SimpleNamespace(
