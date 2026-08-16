@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .a4 import validate_a4_metrics
+from .a4_current import validate_a4_metrics
 from .reconciliation import validate_staging_bundle
 from .staging import STATUS_FAIL
 from .vertical import validate_vertical_pipeline
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
     analytics_parser = sub.add_parser(
         "analytics",
-        help="Independently recompute release-critical A4 metrics from A2/A3 data.",
+        help="Independently recompute release-critical A4 metrics from A2/A3 resolved identities.",
     )
     analytics_parser.add_argument("--database", type=Path, required=True)
 
