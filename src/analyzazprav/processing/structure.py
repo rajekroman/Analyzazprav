@@ -47,8 +47,11 @@ def build_sender_runs(
         while start < len(messages):
             resolved_sender_id = sender_key(messages[start])
             end = start + 1
-            while end < len(messages) and sender_key(messages[end]) == resolved_sender_id:
-                end += 1
+            # Unknown sender identity is not evidence that adjacent unknown rows
+            # belong to the same person. Keep each unknown row as its own run.
+            if resolved_sender_id is not None:
+                while end < len(messages) and sender_key(messages[end]) == resolved_sender_id:
+                    end += 1
             chunk = messages[start:end]
             raw_sender_ids = {message.sender_id for message in chunk}
             sender_id = next(iter(raw_sender_ids)) if len(raw_sender_ids) == 1 else None
