@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Sequence
 
 from .config import AnalyticsConfig
@@ -16,6 +17,10 @@ class AnalyticsStore(V6AnalyticsStore):
     provenance.
     """
 
+    @staticmethod
+    def _integrated_schema_path() -> Path:
+        return Path(__file__).resolve().parents[3] / "database" / "a4_schema_v7.sql"
+
     def _object_exists(self, object_type: str, name: str) -> bool:
         return (
             self.conn.execute(
@@ -30,9 +35,6 @@ class AnalyticsStore(V6AnalyticsStore):
             return False
         if not self._object_exists("table", "analytics_response_latency"):
             return True
-        # Old draft A4 referenced conversation_session(id) directly. Integrated
-        # A3 uses the composite identity (processing_run_id, id), so any direct
-        # session FK marks a reproducible A4 schema that must be rebuilt.
         foreign_keys = self.conn.execute(
             "PRAGMA foreign_key_list(analytics_response_latency)"
         ).fetchall()
@@ -40,6 +42,7 @@ class AnalyticsStore(V6AnalyticsStore):
 
     def _drop_all_a4_derived(self) -> None:
         views = (
+            "analysis_a4_reconciliation",
             "analysis_a4_topic_period_reconciliation",
             "analysis_a4_topic_periods",
             "analysis_a4_topic_evidence",
@@ -94,6 +97,12 @@ class AnalyticsStore(V6AnalyticsStore):
             if self._needs_integrated_schema_rebuild():
                 self._drop_all_a4_derived()
         super().initialize()
+        # Reconciliation is only meaningful on the integrated A3 contract.
+        if self._object_exists("view", "analysis_processed_messages_latest"):
+            with self.conn:
+                self.conn.executescript(
+                    self._integrated_schema_path().read_text(encoding="utf-8")
+                )
 
     def _validate_session_provenance(
         self,
@@ -130,7 +139,6 @@ class AnalyticsStore(V6AnalyticsStore):
                     (processing_run_id, session_id, conversation_id),
                 ).fetchone()
             else:
-                # Compatibility path for small isolated A4 fixtures only.
                 row = self.conn.execute(
                     "SELECT 1 FROM conversation_session WHERE id=? AND conversation_id=?",
                     (session_id, conversation_id),
