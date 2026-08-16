@@ -21,6 +21,10 @@ class AnalyticsConfig:
     regime_min_baseline_periods: int = 4
     regime_signal_threshold: float = 10.0
     regime_z_clip: float = 2.5
+    weekly_trend_window_periods: int = 8
+    monthly_trend_window_periods: int = 6
+    trend_min_periods: int = 4
+    trend_normalized_slope_threshold: float = 0.05
 
     affection_markers: tuple[str, ...] = field(
         default=("❤️", "❤", "💕", "😘", "🥰", "miluju", "miláčku", "zlatíčko", "love you")
@@ -88,6 +92,14 @@ class AnalyticsConfig:
             raise ValueError("regime_signal_threshold must be in (0, 100]")
         if self.regime_z_clip <= 0:
             raise ValueError("regime_z_clip must be positive")
+        if self.trend_min_periods < 2:
+            raise ValueError("trend_min_periods must be >= 2")
+        if self.weekly_trend_window_periods < self.trend_min_periods:
+            raise ValueError("weekly trend window must be >= trend_min_periods")
+        if self.monthly_trend_window_periods < self.trend_min_periods:
+            raise ValueError("monthly trend window must be >= trend_min_periods")
+        if self.trend_normalized_slope_threshold <= 0:
+            raise ValueError("trend_normalized_slope_threshold must be positive")
         engagement_total = (
             self.engagement_activity_weight
             + self.engagement_initiation_weight

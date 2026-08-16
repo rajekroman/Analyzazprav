@@ -182,6 +182,24 @@ class DyadicRegime:
     source_message_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TrendSummary:
+    conversation_id: int
+    participant_id: int
+    period_kind: str
+    metric: str
+    window_periods: int
+    period_start: str
+    period_end: str
+    first_value: float
+    last_value: float
+    slope_per_period: float
+    normalized_slope: float
+    percent_change: float | None
+    direction: str
+    source_message_ids: tuple[int, ...]
+
+
 @dataclass(slots=True)
 class ConversationAnalytics:
     conversation_id: int
@@ -190,6 +208,7 @@ class ConversationAnalytics:
     unknown_sender_message_count: int
     turn_count: int
     session_count: int
+    source_fingerprint: str = ""
     participant_metrics: dict[int, dict[str, Any]] = field(default_factory=dict)
     reciprocity: dict[str, float | None] = field(default_factory=dict)
     response_samples: list[ResponseSample] = field(default_factory=list)
@@ -201,5 +220,6 @@ class ConversationAnalytics:
     period_metrics: list[PeriodParticipantMetric] = field(default_factory=list)
     engagement_signals: list[EngagementPeriodSignal] = field(default_factory=list)
     dyadic_regimes: list[DyadicRegime] = field(default_factory=list)
+    trend_summaries: list[TrendSummary] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)

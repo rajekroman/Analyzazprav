@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
+import json
 import sqlite3
 from typing import Iterable
 
 from .config import AnalyticsConfig
-from .core import analyze_conversation
+from .engine_v5 import analyze_conversation
 from .models import AnalyticMessage, ConversationAnalytics
 
 
@@ -76,18 +78,105 @@ def load_analytic_messages(
     ]
 
 
+def conversation_fingerprint(messages: Iterable[AnalyticMessage]) -> str:
+    """Hash every A2/A3 field that can materially affect A4 output."""
+
+    digest = hashlib.sha256()
+    for message in sorted(messages, key=lambda item: (item.sequence_number, item.message_id)):
+        payload = (
+            message.message_id,
+            message.conversation_id,
+            message.participant_id,
+            message.timestamp_us,
+            message.text_clean,
+            message.session_id,
+            message.sequence_number,
+            message.word_count,
+            message.character_count,
+            message.question_mark_count,
+            message.exclamation_mark_count,
+            message.has_attachment,
+            message.utc_date,
+            message.utc_weekday,
+            message.utc_hour,
+            message.local_date,
+            message.local_weekday,
+            message.local_hour,
+        )
+        digest.update(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _group_messages(
+    messages: Iterable[AnalyticMessage],
+    conversation_ids: Iterable[int] | None = None,
+) -> dict[int, list[AnalyticMessage]]:
+    selected = set(conversation_ids) if conversation_ids is not None else None
+    grouped: dict[int, list[AnalyticMessage]] = defaultdict(list)
+    for message in messages:
+        if selected is not None and message.conversation_id not in selected:
+            continue
+        grouped[message.conversation_id].append(message)
+    return grouped
+
+
+def _analyze_grouped(
+    grouped: dict[int, list[AnalyticMessage]],
+    config: AnalyticsConfig | None,
+) -> list[ConversationAnalytics]:
+    results: list[ConversationAnalytics] = []
+    for conversation_id in sorted(grouped):
+        source = grouped[conversation_id]
+        result = analyze_conversation(source, config)
+        result.source_fingerprint = conversation_fingerprint(source)
+        results.append(result)
+    return results
+
+
 def analyze_database(
     conn: sqlite3.Connection,
     config: AnalyticsConfig | None = None,
     conversation_ids: Iterable[int] | None = None,
 ) -> list[ConversationAnalytics]:
-    selected = set(conversation_ids) if conversation_ids is not None else None
-    grouped: dict[int, list[AnalyticMessage]] = defaultdict(list)
-    for message in load_analytic_messages(conn):
-        if selected is not None and message.conversation_id not in selected:
-            continue
-        grouped[message.conversation_id].append(message)
-    return [
-        analyze_conversation(grouped[conversation_id], config)
-        for conversation_id in sorted(grouped)
-    ]
+    grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
+    return _analyze_grouped(grouped, config)
+
+
+def _latest_fingerprints(conn: sqlite3.Connection) -> dict[int, str]:
+    try:
+        rows = conn.execute(
+            "SELECT conversation_id, source_fingerprint FROM analysis_a4_conversations"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {
+        int(row[0]): str(row[1])
+        for row in rows
+        if row[1] is not None and str(row[1])
+    }
+
+
+def analyze_incremental_database(
+    conn: sqlite3.Connection,
+    config: AnalyticsConfig | None = None,
+    conversation_ids: Iterable[int] | None = None,
+) -> list[ConversationAnalytics]:
+    """Recompute whole conversations only when their A2/A3 projection changed.
+
+    A new import can shift A3 session and turn context retroactively. Whole-
+    conversation granularity is therefore conservative and reproducible; a
+    fixed trailing-message overlap would be faster but can silently miss such
+    structural changes.
+    """
+
+    grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
+    previous = _latest_fingerprints(conn)
+    changed = {
+        conversation_id: source
+        for conversation_id, source in grouped.items()
+        if previous.get(conversation_id) != conversation_fingerprint(source)
+    }
+    return _analyze_grouped(changed, config)
