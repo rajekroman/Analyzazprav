@@ -16,9 +16,11 @@ from .models import (
     TimeBucketMetric,
     TopicCandidate,
     TopicEvidence,
+    TopicMarkerEvidence,
     TrendSummary,
 )
-from .store_v7 import AnalyticsStore
+from .store_v8 import AnalyticsStore
+from .topic_markers import build_topic_marker_evidence
 from .topics import build_lexical_topic_candidates, tokenize_topic_text
 
 __all__ = [
@@ -35,11 +37,13 @@ __all__ = [
     "TimeBucketMetric",
     "TopicCandidate",
     "TopicEvidence",
+    "TopicMarkerEvidence",
     "TrendSummary",
     "analyze_conversation",
     "analyze_database",
     "analyze_incremental_database",
     "build_lexical_topic_candidates",
+    "build_topic_marker_evidence",
     "build_turns",
     "load_analytic_messages",
     "tokenize_topic_text",
