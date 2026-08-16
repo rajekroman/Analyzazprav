@@ -57,6 +57,7 @@ def _participant_identity(sender_handle: str) -> tuple[str, str]:
 
 
 def _source_fingerprint(manifest: Mapping[str, Any]) -> str:
+    """Fingerprint one concrete A1 ingest representation, not the raw source bytes."""
     source = manifest.get("source") or {}
     parser = manifest.get("parser") or {}
     payload = {
@@ -135,6 +136,7 @@ def ingest_a1_staging_bundle(
     run = db.begin_import(
         source_type=source_type,
         source_fingerprint=_source_fingerprint(manifest),
+        source_sha256=source_sha256,
         source_path=str(root),
         parser_version=str(parser.get("version") or "") or None,
         metadata={
