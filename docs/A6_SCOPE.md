@@ -1,14 +1,15 @@
 # A6 — Lokální rozhraní
 
-A6 je poslední interaktivní vrstva projektu Analýza zpráv. Neprovádí import ani nenahrazuje deterministickou analytiku; zpřístupňuje skutečná data A2, nálezy A4 a selektivní interpretaci A5 tak, aby každý významný závěr šel dohledat zpět ke konkrétním zprávám a jejich source provenance.
+A6 je poslední interaktivní vrstva projektu Analýza zpráv. Neprovádí import ani nenahrazuje deterministickou analytiku; zpřístupňuje skutečná data A2, metriky a nálezy A4 a selektivní interpretaci A5 tak, aby každý významný závěr šel dohledat zpět ke konkrétním zprávám a jejich source provenance.
 
 ## Primární workflow
 
-`kontakt → období → konverzace → časová osa / grafy → významné období → evidence → původní zpráva → AI analýza`
+`kontakt → konverzace → období → zprávy / časová osa / grafy → významné období → evidence → původní zpráva → AI analýza`
 
 ## MVP obrazovky
 
 - přehled kontaktů;
+- explicitní výběr konkrétní konverzace;
 - konverzace a message browser;
 - časová osa aktivity;
 - základní grafy;
@@ -23,10 +24,12 @@ A6 je poslední interaktivní vrstva projektu Analýza zpráv. Neprovádí impor
 - SQLite pouze pro čtení (`mode=ro`);
 - přímá kompatibilita s A2 analytickými views;
 - bezpečný fallback přes automatickou detekci kompatibilní message tabulky/view;
-- filtr kontaktu, období, odesílatele a full-textového výrazu;
+- navigace `Kontakt → conversation_id → období`;
+- filtr odesílatele a full-textového výrazu pro message browser;
 - auditovatelný prohlížeč zpráv s canonical `message_id`;
 - lazy A2 provenance resolver přes `analysis_message_sources`;
-- aktivita, poměr odesílatelů a response latency jako dočasný MVP fallback;
+- A4 latest-run metriky přes `analysis_a4_daily`, `analysis_a4_participants`, `analysis_a4_responses`, `analysis_a4_conversations`;
+- lokální výpočet aktivity/latency pouze jako explicitní fallback, pokud A4 views nejsou dostupné;
 - A4 latest-run adapter pro events, change points a nestabilní dyadické režimy;
 - explicitní drill-down `A4 nález → source_message_ids → canonical message → A2 source record`;
 - explicitní ruční výběr zpráv;
@@ -38,7 +41,7 @@ A6 je poslední interaktivní vrstva projektu Analýza zpráv. Neprovádí impor
 
 ## Hranice odpovědnosti
 
-A6 neimportuje iMessage, nededuplikuje zdrojová data, nemění A2/A3/A4 SQLite vrstvy a nevytváří vlastní analytickou pravdu. Výpočty, které patří do A4, jsou v A6 pouze dočasný fallback a po integraci A4 autoritativních metrik se odstraní.
+A6 neimportuje iMessage, nededuplikuje zdrojová data, nemění A2/A3/A4 SQLite vrstvy a nevytváří vlastní analytickou pravdu. Pokud jsou A4 analytické views dostupné, A6 je používá jako autoritativní zdroj metrik. Vlastní lehký výpočet z canonical messages je povolen pouze jako viditelně označený vývojový fallback pro demo nebo zdroj bez A4.
 
 A6 nesmí skrýt porušenou evidence chain. Pokud A4 nebo A5 odkazuje na `message_id`, který v kanonických datech chybí, UI tuto skutečnost explicitně zobrazí jako chybu dohledatelnosti.
 
@@ -64,11 +67,22 @@ A6 preferuje autoritativní A2 views:
 
 ## Kontrakt A4
 
-A6 čte pouze publikované latest-run views:
+A6 čte pouze publikované latest-run views.
+
+Metriky:
+
+- `analysis_a4_conversations`;
+- `analysis_a4_participants`;
+- `analysis_a4_responses`;
+- `analysis_a4_daily`.
+
+Významné nálezy:
 
 - `analysis_a4_events`;
 - `analysis_a4_changes`;
 - `analysis_a4_regimes`.
+
+Denní A4 řady jsou používány pro activity, initiations a denní median response latency. Souhrnný response median se z `analysis_a4_responses` počítá pouze pro celou konverzaci; při zúžení období se nevymýšlí přesný intervalový median, protože response view zatím nenese timestamp jednotlivého response turnu.
 
 Každý nález musí zachovat `source_message_ids_json`. Malformed evidence JSON je chyba a nesmí se převést na prázdný seznam.
 
@@ -84,6 +98,6 @@ A5 výsledek se zobrazuje odděleně jako pozorování, interpretace, vzorce, al
 
 A6 lze považovat za hotové až po integračním běhu nad skutečným golden datasetem, kde projde celý řetězec:
 
-`A1 import → A2 canonical/provenance → A3 processing → A4 finding → A6 evidence drill-down → A5 result → A6 evidence drill-down`
+`A1 import → A2 canonical/provenance → A3 processing → A4 metrics/finding → A6 evidence drill-down → A5 result → A6 evidence drill-down`
 
 A7 musí nezávisle potvrdit, že v tomto řetězci nebylo ztraceno ani podvrženo žádné source/message ID.
