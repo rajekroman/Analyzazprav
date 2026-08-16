@@ -33,6 +33,8 @@ class MessageRecord:
     raw_text: str | None
     text_source: str | None
     service: str | None
+    conversation_participant_handles: list[str] = field(default_factory=list)
+    conversation_metadata: dict[str, Any] = field(default_factory=dict)
     reply_to_guid: str | None = None
     attachments: list[AttachmentRecord] = field(default_factory=list)
     raw_payload: dict[str, Any] = field(default_factory=dict)
