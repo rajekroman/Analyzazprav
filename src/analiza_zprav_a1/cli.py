@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from .attachment_reconciliation import reconcile_bundle
 from .importer import (
     import_generic_csv,
     import_generic_json,
@@ -12,7 +13,6 @@ from .importer import (
     import_imazing_csv,
     import_imessage,
 )
-from .relation_reconciliation import reconcile_bundle
 from .source_detection import detect_source
 
 
