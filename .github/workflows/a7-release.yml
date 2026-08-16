@@ -1,0 +1,122 @@
+name: A7 current-main release gate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/a7-release.yml'
+      - 'tools/a7_release/**'
+      - 'tests/test_a7_release_verdict.py'
+      - 'src/analyzazprav/qa/**'
+      - 'src/analyzazprav/a5_ai/**'
+      - 'a6/**'
+      - 'app.py'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+  push:
+    branches:
+      - main
+      - agent/a7-current-main-release-gate
+    paths:
+      - '.github/workflows/a7-release.yml'
+      - 'tools/a7_release/**'
+      - 'tests/test_a7_release_verdict.py'
+      - 'src/analyzazprav/qa/**'
+      - 'src/analyzazprav/a5_ai/**'
+      - 'a6/**'
+      - 'app.py'
+      - 'pyproject.toml'
+      - 'requirements.txt'
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact current checkout
+        run: python -m pip install -r requirements.txt
+      - name: Run complete repository suite
+        run: pytest -q
+      - name: Compile Python sources
+        run: python -m compileall -q src a6 app.py tools/a7_release
+      - name: Write core report
+        run: >-
+          python -c "import json,os,pathlib; pathlib.Path('a7-core-report.json').write_text(json.dumps({'schema_version':1,'module':'core','status':'PASS','verdict':'VALID','contract_sha':os.environ['GITHUB_SHA'],'checks':{'full_repository_pytest':True,'compileall':True},'issues':[]}, indent=2)+'\\n')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a7-core-report
+          path: a7-core-report.json
+
+  a5-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Run current-checkout A5 evidence/provenance probe
+        run: >-
+          python tools/a7_release/a5_live.py
+          --report a7-a5-report.json
+          --contract-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a7-a5-report
+          path: a7-a5-report.json
+          if-no-files-found: ignore
+
+  a6-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Run current-checkout A2→A6→A5 provenance fixture
+        run: >-
+          python tools/a7_release/a6_live.py
+          --report a7-a6-report.json
+          --contract-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a7-a6-report
+          path: a7-a6-report.json
+          if-no-files-found: ignore
+
+  release-verdict:
+    if: always()
+    needs: [core, a5-live, a6-live]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download component reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: a7-*-report
+          path: a7-reports
+          merge-multiple: true
+      - name: Aggregate exact-SHA verdict
+        run: >-
+          python tools/a7_release/release_verdict.py
+          --reports a7-reports
+          --report a7-release-verdict.json
+          --sha "$GITHUB_SHA"
+          --core-result '${{ needs.core.result }}'
+          --a5-result '${{ needs.a5-live.result }}'
+          --a6-result '${{ needs.a6-live.result }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: a7-release-verdict
+          path: a7-release-verdict.json
+          if-no-files-found: ignore
