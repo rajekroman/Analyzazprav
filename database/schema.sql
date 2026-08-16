@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '2');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
 
 CREATE TABLE IF NOT EXISTS schema_migration (
     version INTEGER PRIMARY KEY,
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS import_run (
     source_type TEXT NOT NULL,
     source_path TEXT,
     source_fingerprint TEXT NOT NULL,
+    source_sha256 TEXT,
     parser_version TEXT,
     normalizer_version TEXT NOT NULL DEFAULT '1',
     started_at_utc_us INTEGER NOT NULL,
@@ -26,6 +27,8 @@ CREATE TABLE IF NOT EXISTS import_run (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     UNIQUE(source_type, source_fingerprint)
 );
+CREATE INDEX IF NOT EXISTS idx_import_run_source_sha256
+ON import_run(source_type, source_sha256, parser_version);
 
 CREATE TABLE IF NOT EXISTS participant (
     id INTEGER PRIMARY KEY,
