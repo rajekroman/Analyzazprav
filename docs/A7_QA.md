@@ -180,6 +180,34 @@ Workflow `.github/workflows/a7-downstream.yml` má tři autoritativní komponent
 
 Failed job vždy přebíjí stale VALID report. Chybějící report není PASS.
 
+### Self-contained release provenance — schema v2
+
+Finální `a7-release-verdict.json` musí být auditovatelný bez zpětného čtení workflow YAML. Schema v2 proto obsahuje `component_contracts` s immutable expected/observed Git SHAs pro každou testovanou komponentu:
+
+```json
+{
+  "schema_version": 2,
+  "component_contracts": {
+    "core": {
+      "expected_sha": "<tested merge-ref SHA>",
+      "observed_sha": "<SHA emitted by core report>"
+    },
+    "A5": {
+      "expected_sha": "<pinned A5 SHA>",
+      "observed_sha": "<SHA emitted by A5 live report>"
+    },
+    "A6": {
+      "expected_sha": "<pinned A6 SHA>",
+      "observed_sha": "<SHA emitted by A6 live report>"
+    }
+  }
+}
+```
+
+A7 vyžaduje full 40-character lowercase Git SHA a exact equality `expected_sha == observed_sha`. Přítomný component report s chybějícím/malformed SHA nebo s jiným SHA je release-blocking `INVALID`. Zcela chybějící component report si ponechává obecnou semantiku `NEEDS_REVIEW` — A7 nesmí tvrdit, že nesoulad existuje, pokud důkaz vůbec nebyl dodán.
+
+Tím je samotný release artefakt svázán s přesnými testovanými kódy; auditor nemusí identitu komponent odvozovat z branch names, workflow konfigurace ani pořadí jobů.
+
 `release_ready=true` znamená pouze **integrovaný core + synthetic exact-head downstream contract ready**. Neznamená, že byl validován libovolný reálný uživatelský archiv nebo všechny Apple Messages schema varianty.
 
 ## Stavové zásady
