@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .importer import import_imazing_csv, import_imessage
+from .importer import import_generic_csv, import_generic_json, import_imazing_csv, import_imessage
 
 
 def _add_output_and_attachments(parser: argparse.ArgumentParser) -> None:
@@ -28,6 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     imazing = sub.add_parser("imazing-csv", help="Extract an iMazing Messages CSV export into the A1 staging contract")
     imazing.add_argument("--csv", required=True, type=Path)
     _add_output_and_attachments(imazing)
+
+    generic_csv = sub.add_parser("csv", help="Extract a headered generic message CSV into the A1 staging contract")
+    generic_csv.add_argument("--csv", required=True, type=Path)
+    _add_output_and_attachments(generic_csv)
+
+    generic_json = sub.add_parser("json", help="Extract generic JSON/JSONL message records into the A1 staging contract")
+    generic_json.add_argument("--json", required=True, type=Path)
+    _add_output_and_attachments(generic_json)
     return parser
 
 
@@ -37,6 +45,10 @@ def main() -> int:
         stats = import_imessage(args.chat_db, args.output_dir, args.attachments_root)
     elif args.command == "imazing-csv":
         stats = import_imazing_csv(args.csv, args.output_dir, args.attachments_root)
+    elif args.command == "csv":
+        stats = import_generic_csv(args.csv, args.output_dir, args.attachments_root)
+    elif args.command == "json":
+        stats = import_generic_json(args.json, args.output_dir, args.attachments_root)
     else:
         return 1
     print(json.dumps(asdict(stats), ensure_ascii=False, indent=2))
