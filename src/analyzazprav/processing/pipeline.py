@@ -14,7 +14,7 @@ from .structure import (
 )
 from .text import clean_text
 
-PROCESSING_VERSION = "5"
+PROCESSING_VERSION = "6"
 
 
 @dataclass(frozen=True, slots=True)

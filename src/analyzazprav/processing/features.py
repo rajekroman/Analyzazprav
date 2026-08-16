@@ -41,16 +41,21 @@ def build_features(
 
     for conversation_id in sorted(grouped):
         previous: CanonicalMessage | None = None
-        last_by_sender: dict[int | None, CanonicalMessage] = {}
+        # Only known/resolved sender identities belong here. Unknown identity is
+        # uncertainty, not a synthetic participant that can be same or other.
+        last_by_sender: dict[int, CanonicalMessage] = {}
         for message in grouped[conversation_id]:
             clean = clean_text(message.text)
             current_sender = sender_key(message)
-            others = [candidate for sender, candidate in last_by_sender.items() if sender != current_sender]
-            previous_other = max(
-                (candidate for candidate in others if candidate.timestamp_us is not None),
-                key=lambda candidate: candidate.timestamp_us,
-                default=None,
-            )
+            if current_sender is None:
+                previous_other = None
+            else:
+                others = [candidate for sender, candidate in last_by_sender.items() if sender != current_sender]
+                previous_other = max(
+                    (candidate for candidate in others if candidate.timestamp_us is not None),
+                    key=lambda candidate: candidate.timestamp_us,
+                    default=None,
+                )
             media_counts = {kind: 0 for kind in ("image", "gif", "video", "audio", "document", "other")}
             for attachment in message.attachments:
                 media_counts[attachment.media_type] = media_counts.get(attachment.media_type, 0) + 1
@@ -82,5 +87,6 @@ def build_features(
                 local_weekday=calendar[8], local_hour=calendar[9],
             )
             previous = message
-            last_by_sender[current_sender] = message
+            if current_sender is not None:
+                last_by_sender[current_sender] = message
     return result
