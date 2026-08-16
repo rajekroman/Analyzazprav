@@ -6,7 +6,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from analyzazprav.analytics import AnalyticsConfig, AnalyticsStore, analyze_database, load_analytic_messages
+from analyzazprav.analytics import (
+    AnalyticsConfig,
+    AnalyticsStore,
+    analyze_database,
+    load_analytic_messages,
+)
 from analyzazprav.normalization import CanonicalDatabase, MessageInput
 from analyzazprav.processing import (
     ProcessingConfig,
@@ -83,7 +88,7 @@ class A4IntegratedMainContractTests(unittest.TestCase):
                 raw_payload={"rowid": 1},
             )
         )
-        second = self.db.insert_message(
+        self.db.insert_message(
             MessageInput(
                 import_run_id=run.id,
                 source_type="fixture",
@@ -107,8 +112,6 @@ class A4IntegratedMainContractTests(unittest.TestCase):
                 raw_payload={"rowid": 2},
             )
         )
-        # The canonical message remains one row in `message`, but the second
-        # conversation gets its own immutable membership occurrence.
         self.db.conn.execute(
             """INSERT INTO message_conversation(
                    message_id, conversation_id, is_primary, metadata_json
@@ -134,13 +137,15 @@ class A4IntegratedMainContractTests(unittest.TestCase):
         messages = load_analytic_messages(self.db.conn)
         self.assertEqual(len(messages), 3)
         self.assertEqual(len({message.membership_id for message in messages}), 3)
+        expected_memberships = [
+            (int(row[0]), int(row[1]))
+            for row in self.db.conn.execute(
+                "SELECT conversation_id, message_id FROM message_conversation"
+            ).fetchall()
+        ]
         self.assertEqual(
             sorted((message.conversation_id, message.message_id) for message in messages),
-            sorted(
-                self.db.conn.execute(
-                    "SELECT conversation_id, message_id FROM message_conversation"
-                ).fetchall()
-            ),
+            sorted(expected_memberships),
         )
 
         results = {item.conversation_id: item for item in analyze_database(self.db.conn)}
