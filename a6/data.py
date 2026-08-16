@@ -193,8 +193,9 @@ def add_response_latency(frame: pd.DataFrame, max_gap_hours: float = 72.0) -> pd
     if result.empty:
         return result
 
-    previous_sender = result["sender"].shift(1)
-    previous_time = result["timestamp"].shift(1)
+    grouped = result.groupby("conversation_id", sort=False, dropna=False)
+    previous_sender = grouped["sender"].shift(1)
+    previous_time = grouped["timestamp"].shift(1)
     delta = (result["timestamp"] - previous_time).dt.total_seconds()
     is_reply = result["sender"].ne(previous_sender) & previous_sender.notna()
     valid_gap = delta.between(0, max_gap_hours * 3600, inclusive="both")
@@ -221,7 +222,7 @@ def filter_messages(
         end_utc = pd.Timestamp(end)
         end_utc = end_utc.tz_localize("UTC") if end_utc.tzinfo is None else end_utc.tz_convert("UTC")
         result = result[result["timestamp"] <= end_utc]
-    if senders:
+    if senders is not None:
         sender_set = set(senders)
         result = result[result["sender"].isin(sender_set)]
     if search:
