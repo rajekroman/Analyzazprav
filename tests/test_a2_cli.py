@@ -69,7 +69,7 @@ class A2CliTests(unittest.TestCase):
         code, payload = self._run(["init", "--database", str(self.database)])
         self.assertEqual(code, 0)
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["schema_version"], "6")
+        self.assertEqual(payload["schema_version"], "7")
         self.assertTrue(self.database.is_file())
 
     def test_check_missing_database_fails_without_creating_it(self):
@@ -89,6 +89,7 @@ class A2CliTests(unittest.TestCase):
         self.assertEqual((first_code, second_code), (0, 0))
         self.assertFalse(first["already_imported"])
         self.assertEqual(first["messages"], 1)
+        self.assertEqual(first["source_relations"], 0)
         self.assertEqual(first["conversation_relations"], 1)
         self.assertTrue(second["already_imported"])
         self.assertEqual(first["import_run_id"], second["import_run_id"])

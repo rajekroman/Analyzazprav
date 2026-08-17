@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .database import CanonicalDatabase
-from .integrity import full_integrity_report
+from .integrity_v7 import full_integrity_report
 from .time_contract import ingest_a1_staging_bundle
 
 
@@ -59,6 +59,7 @@ def _cmd_ingest_a1(database: Path, staging: Path) -> int:
                 "messages": result.messages,
                 "attachments": result.attachments,
                 "relations": result.relations,
+                "source_relations": result.source_relations,
                 "conversation_relations": result.conversation_relations,
                 "integrity": report,
             }
