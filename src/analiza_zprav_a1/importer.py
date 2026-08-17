@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from .apple_event_metadata import project_apple_event_metadata
 from .attachments import resolve_attachments
+from .csv_mapping import CSVMappingProfile
 from .hashing import sha256_file, stable_message_key
 from .models import MessageRecord
 from .parsers.generic_structured import GenericCSVParser, GenericJSONParser
@@ -14,16 +15,18 @@ from .parsers.generic_text import GenericTextParser, TextMode
 from .parsers.imazing_csv import IMazingCSVParser
 from .parsers.imessage import IMessageParser
 from .reconciliation import reconcile_bundle, write_reconciliation
+from .sqlite_schema import inventory_sqlite_schema, write_schema_inventory
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 A1_CONTRACT_VERSION = "1"
 IMESSAGE_PARSER_NAME = "imessage-chatdb"
-IMESSAGE_PARSER_VERSION = "0.6.0"
+IMESSAGE_PARSER_VERSION = "0.7.0"
 IMAZING_PARSER_NAME = "imazing-messages-csv"
 IMAZING_PARSER_VERSION = "0.1.0"
 GENERIC_CSV_PARSER_NAME = "generic-message-csv"
+GENERIC_CSV_PARSER_VERSION = "0.2.0"
 GENERIC_JSON_PARSER_NAME = "generic-message-json"
-GENERIC_STRUCTURED_PARSER_VERSION = "0.1.0"
+GENERIC_JSON_PARSER_VERSION = "0.1.0"
 GENERIC_TEXT_PARSER_NAME = "generic-message-text"
 GENERIC_TEXT_PARSER_VERSION = "0.1.0"
 
@@ -99,6 +102,8 @@ def _write_records(
     source_hash_override: str | None = None,
     source_name_override: str | None = None,
     source_metadata: Mapping[str, object] | None = None,
+    parser_metadata: Mapping[str, object] | None = None,
+    source_schema_inventory: Mapping[str, Any] | None = None,
     reconciliation_sqlite_snapshot: Path | None = None,
 ) -> ImportStats:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +111,11 @@ def _write_records(
     manifest_path = output_dir / "manifest.json"
     errors_jsonl = output_dir / "errors.jsonl"
     reconciliation_path = output_dir / "reconciliation.json"
+    schema_path = output_dir / "schema.json"
     source_hash = source_hash_override or sha256_file(source_path)
+
+    if source_schema_inventory is not None:
+        write_schema_inventory(dict(source_schema_inventory), schema_path)
 
     seen = emitted = attachments = resolved = missing = message_errors = 0
     with (
@@ -166,20 +175,38 @@ def _write_records(
     }
     if source_metadata:
         source_manifest.update(source_metadata)
+    if source_schema_inventory is not None:
+        source_manifest.update(
+            {
+                "schema_inventory_version": source_schema_inventory.get("inventory_version"),
+                "schema_signature_sha256": source_schema_inventory.get("signature_sha256"),
+            }
+        )
+
+    parser_manifest: dict[str, object] = {
+        "name": parser_name,
+        "version": parser_version,
+    }
+    if parser_metadata:
+        parser_manifest.update(parser_metadata)
+
+    outputs: dict[str, str] = {
+        "messages": output_jsonl.name,
+        "errors": errors_jsonl.name,
+        "reconciliation": reconciliation_path.name,
+    }
+    if source_schema_inventory is not None:
+        outputs["schema"] = schema_path.name
 
     manifest: dict[str, object] = {
         "contract_version": A1_CONTRACT_VERSION,
         "source": source_manifest,
-        "parser": {"name": parser_name, "version": parser_version},
+        "parser": parser_manifest,
         "source_record_key": _record_key_manifest(source_type),
         "attachments": {
             "root": str(attachments_root.resolve()) if attachments_root is not None else None,
         },
-        "outputs": {
-            "messages": output_jsonl.name,
-            "errors": errors_jsonl.name,
-            "reconciliation": reconciliation_path.name,
-        },
+        "outputs": outputs,
         "counts": {
             "messages_seen": seen,
             "messages_emitted": emitted,
@@ -262,11 +289,12 @@ def import_imessage(
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
 
-    # Never hash the live main database file while parsing a potentially
-    # different logical state from its WAL. SQLite backup produces one immutable
-    # logical snapshot; A1 hashes, parses and reconciles that exact snapshot.
+    # One immutable logical snapshot is the source of truth for content hash,
+    # parsing, schema inventory and reconciliation. This prevents WAL-visible
+    # state from being described by metadata from a different database state.
     with consistent_sqlite_snapshot(chat_db) as snapshot:
         snapshot_hash = sha256_file(snapshot)
+        schema_inventory = inventory_sqlite_schema(snapshot)
         return _write_records(
             IMessageParser(snapshot).iter_messages(),
             source_path=chat_db,
@@ -281,6 +309,7 @@ def import_imessage(
                 "snapshot_method": "sqlite_online_backup_v1",
                 "snapshot_includes_committed_wal": True,
             },
+            source_schema_inventory=schema_inventory,
             reconciliation_sqlite_snapshot=snapshot,
         )
 
@@ -309,17 +338,38 @@ def import_generic_csv(
     csv_path: Path,
     output_dir: Path,
     attachments_root: Path | None = None,
+    mapping_profile_path: Path | None = None,
 ) -> ImportStats:
     if not csv_path.is_file():
         raise FileNotFoundError(csv_path)
     if attachments_root is not None and not attachments_root.is_dir():
         raise NotADirectoryError(attachments_root)
+
+    profile: CSVMappingProfile | None = None
+    parser_version = GENERIC_CSV_PARSER_VERSION
+    parser_metadata: dict[str, object] | None = None
+    if mapping_profile_path is not None:
+        profile = CSVMappingProfile.load(mapping_profile_path)
+        profile_file_hash = sha256_file(mapping_profile_path)
+        profile_semantic_hash = profile.semantic_sha256()
+        # A2 fingerprints parser.version. Binding canonical profile semantics
+        # prevents two genuinely different mappings of the same immutable CSV
+        # from collapsing, while harmless JSON whitespace changes remain stable.
+        parser_version = (
+            f"{GENERIC_CSV_PARSER_VERSION}+profile.{profile_semantic_hash}"
+        )
+        parser_metadata = profile.manifest_metadata(
+            profile_name=mapping_profile_path.name,
+            file_sha256=profile_file_hash,
+        )
+
     return _write_records(
-        GenericCSVParser(csv_path).iter_messages(),
+        GenericCSVParser(csv_path, mapping_profile=profile).iter_messages(),
         source_path=csv_path,
         source_type="generic_message_csv",
         parser_name=GENERIC_CSV_PARSER_NAME,
-        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
+        parser_version=parser_version,
+        parser_metadata=parser_metadata,
         output_dir=output_dir,
         attachments_root=attachments_root,
     )
@@ -344,7 +394,7 @@ def import_generic_json(
         source_path=json_path,
         source_type=source_type,
         parser_name=GENERIC_JSON_PARSER_NAME,
-        parser_version=GENERIC_STRUCTURED_PARSER_VERSION,
+        parser_version=GENERIC_JSON_PARSER_VERSION,
         output_dir=output_dir,
         attachments_root=attachments_root,
     )

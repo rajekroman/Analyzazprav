@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .hashing import sha256_file
+from .sqlite_schema import inventory_sqlite_schema
 from .sqlite_snapshot import consistent_sqlite_snapshot
 
 RECONCILIATION_VERSION = "1"
@@ -39,6 +40,18 @@ def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
                 continue
             records.append(value)
     return records, failures
+
+
+def _read_json_object(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    if not path.is_file():
+        return None, [f"missing file: {path.name}"]
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, [f"{path.name}: {exc.msg}"]
+    if not isinstance(value, dict):
+        return None, [f"{path.name}: document is not an object"]
+    return value, []
 
 
 def _readonly_sqlite(path: Path) -> sqlite3.Connection:
@@ -278,12 +291,75 @@ def _reconcile_against_physical_source(
     raw_counts: dict[str, Any] = {}
     unsupported_records: list[dict[str, Any]] = []
     duplicate_records: list[dict[str, Any]] = []
+    schema_failures: list[str] = []
+    schema_summary: dict[str, Any] = {}
 
     if expected_source_type == "imessage_chat_db":
         inventory = _imessage_inventory(physical_source_path)
         raw_counts.update(inventory["counts"])
         unsupported_records.extend(inventory["unsupported_records"])
         duplicate_records.extend(inventory["duplicate_records"])
+
+        actual_schema = inventory_sqlite_schema(physical_source_path)
+        expected_schema_signature = source.get("schema_signature_sha256")
+        expected_schema_version = source.get("schema_inventory_version")
+        schema_output_name = outputs.get("schema")
+        schema_contract_declared = any(
+            value is not None
+            for value in (
+                expected_schema_signature,
+                expected_schema_version,
+                schema_output_name,
+            )
+        )
+        schema_report: dict[str, Any] | None = None
+        if schema_contract_declared:
+            if isinstance(schema_output_name, str) and schema_output_name:
+                schema_path = _output_path(bundle_dir, schema_output_name)
+                schema_report, schema_failures = _read_json_object(schema_path)
+            else:
+                schema_failures.append("manifest outputs.schema is missing")
+
+            checks.update(
+                {
+                    "imessage_schema_contract_complete": (
+                        isinstance(expected_schema_signature, str)
+                        and bool(expected_schema_signature)
+                        and isinstance(expected_schema_version, str)
+                        and bool(expected_schema_version)
+                        and isinstance(schema_output_name, str)
+                        and bool(schema_output_name)
+                    ),
+                    "imessage_schema_report_parse": not schema_failures,
+                    "imessage_schema_signature_matches_snapshot": (
+                        expected_schema_signature == actual_schema.get("signature_sha256")
+                    ),
+                    "imessage_schema_inventory_version_matches_snapshot": (
+                        expected_schema_version == actual_schema.get("inventory_version")
+                    ),
+                    "imessage_schema_report_matches_snapshot": (
+                        schema_report == actual_schema
+                    ),
+                    "imessage_schema_report_signature_matches_manifest": (
+                        isinstance(schema_report, dict)
+                        and schema_report.get("signature_sha256") == expected_schema_signature
+                    ),
+                }
+            )
+
+        schema_summary = {
+            "contract_declared": schema_contract_declared,
+            "inventory_version": actual_schema.get("inventory_version"),
+            "expected_signature_sha256": expected_schema_signature,
+            "actual_signature_sha256": actual_schema.get("signature_sha256"),
+            "report_signature_sha256": (
+                schema_report.get("signature_sha256")
+                if isinstance(schema_report, dict)
+                else None
+            ),
+            "table_count": len(actual_schema.get("tables") or []),
+            "sqlite": actual_schema.get("sqlite") or {},
+        }
 
         emitted_message_ids = {
             str(record["source_message_id"])
@@ -382,11 +458,12 @@ def _reconcile_against_physical_source(
             "message_error_records": len(message_errors),
         },
         "raw_counts": raw_counts,
+        "schema": schema_summary,
         "unsupported_records": unsupported_records,
         "duplicate_records": duplicate_records,
         "checks": checks,
         "failed_checks": failed_checks,
-        "parse_failures": parse_failures,
+        "parse_failures": parse_failures + schema_failures,
     }
 
 
