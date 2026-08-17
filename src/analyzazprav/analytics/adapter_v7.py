@@ -64,7 +64,15 @@ def _resolve_participants(
     sidecars keep their raw sender IDs. A real A3 v5 database is fail-closed:
     once the v5 tables exist, the resolved latest-view and exact membership
     coverage are required.
+
+    The resolved-sidecar lookup is scoped to conversations already loaded by the
+    membership adapter. This is performance-only: fail-closed reconciliation is
+    unchanged for every selected conversation, while an explicit single-chat
+    analysis no longer materializes resolved rows for the whole archive.
     """
+
+    if not messages:
+        return []
 
     has_v5_sidecars = _object_exists(conn, "resolved_participant", "table")
     if not has_v5_sidecars:
@@ -76,10 +84,14 @@ def _resolve_participants(
             "participant-resolution sidecars are present"
         )
 
+    conversation_ids = sorted({message.conversation_id for message in messages})
+    placeholders = ",".join("?" for _ in conversation_ids)
     rows = list(
         conn.execute(
-            """SELECT membership_id, message_id, conversation_id, resolved_sender_id
-               FROM analysis_processed_messages_resolved_latest"""
+            f"""SELECT membership_id, message_id, conversation_id, resolved_sender_id
+                FROM analysis_processed_messages_resolved_latest
+                WHERE conversation_id IN ({placeholders})""",
+            tuple(conversation_ids),
         )
     )
     by_membership: dict[int, tuple[int, int, int | None]] = {}
@@ -149,6 +161,28 @@ def load_analytic_messages(
     return _resolve_participants(conn, base)
 
 
+def _load_selected_messages(
+    conn: sqlite3.Connection,
+    conversation_ids: Iterable[int] | None,
+) -> list[AnalyticMessage]:
+    """Load only requested conversations when the caller supplied a selection.
+
+    The common interactive workflow analyses one target chat. Pushing that
+    selection into the existing membership SQL avoids reading every unrelated
+    message before `_group_messages` discards it. Full-archive callers retain the
+    original one-pass load.
+    """
+
+    if conversation_ids is None:
+        return load_analytic_messages(conn)
+
+    selected = sorted({int(conversation_id) for conversation_id in conversation_ids})
+    messages: list[AnalyticMessage] = []
+    for conversation_id in selected:
+        messages.extend(load_analytic_messages(conn, conversation_id))
+    return messages
+
+
 def conversation_fingerprint(messages: Iterable[AnalyticMessage]) -> str:
     return _membership_adapter.conversation_fingerprint(messages)
 
@@ -172,7 +206,8 @@ def analyze_database(
     conversation_ids: Iterable[int] | None = None,
 ) -> list[ConversationAnalytics]:
     cfg = config or AnalyticsConfig()
-    grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
+    messages = _load_selected_messages(conn, conversation_ids)
+    grouped = _group_messages(messages)
     return _analyze_grouped(grouped, cfg)
 
 
@@ -184,7 +219,8 @@ def analyze_incremental_database(
     """Recompute conversations when data, rules, or A3 provenance changed."""
 
     cfg = config or AnalyticsConfig()
-    grouped = _group_messages(load_analytic_messages(conn), conversation_ids)
+    messages = _load_selected_messages(conn, conversation_ids)
+    grouped = _group_messages(messages)
     previous = _latest_analysis_states_with_processing_run(conn)
     expected_signature = analysis_signature(cfg)
     current_processing_run_id = _latest_completed_processing_run_id(conn)
