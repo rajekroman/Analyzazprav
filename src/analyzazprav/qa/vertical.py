@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterable
 
+from .jsonl import iter_physical_jsonl_lines
 from .reconciliation import validate_staging_bundle
 from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING
 
@@ -37,7 +38,7 @@ def _load_bundle(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     records = [
         json.loads(line)
-        for line in (root / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+        for _, line in iter_physical_jsonl_lines(root / "messages.jsonl")
         if line.strip()
     ]
     if not isinstance(manifest, dict) or any(not isinstance(record, dict) for record in records):
