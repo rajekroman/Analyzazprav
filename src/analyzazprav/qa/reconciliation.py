@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .jsonl import iter_physical_jsonl_lines
 from .staging import STATUS_FAIL, STATUS_PASS, STATUS_WARNING, validate_staging_dir
 
 
@@ -18,7 +19,7 @@ def _count_jsonl(path: Path) -> tuple[int, list[str]]:
     if not path.is_file():
         return 0, [f"missing file: {path.name}"]
     try:
-        for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for line_number, raw in iter_physical_jsonl_lines(path):
             if not raw.strip():
                 continue
             try:
