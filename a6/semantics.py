@@ -41,6 +41,8 @@ _SEMANTICS = {
 
 def candidate_semantics(candidate_type: str | None) -> CandidateSemantics:
     key = (candidate_type or "").strip().casefold()
+    if key == "regime":
+        key = "dyadic_regime"
     return _SEMANTICS.get(
         key,
         CandidateSemantics(
