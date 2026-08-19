@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .jsonl import iter_physical_jsonl_lines
+
 STATUS_PASS = "PASS"
 STATUS_WARNING = "WARNING"
 STATUS_FAIL = "FAIL"
@@ -151,7 +153,7 @@ def validate_staging_dir(root: str | Path) -> dict[str, Any]:
         _issue(issues, "ERROR", "MESSAGES_MISSING", "messages.jsonl is missing")
     else:
         try:
-            for line_no, raw in enumerate(messages_path.read_text(encoding="utf-8").splitlines(), start=1):
+            for line_no, raw in iter_physical_jsonl_lines(messages_path):
                 if not raw.strip():
                     _issue(issues, "WARNING", "EMPTY_LINE", "empty JSONL line ignored", line=line_no)
                     continue
